@@ -21,7 +21,8 @@ def remover_tildes_y_raros(texto):
     if pd.isna(texto): return ""
     txt = str(texto).upper().strip()
     txt = unicodedata.normalize('NFD', txt)
-    txt = ''.join(c for c in unicodedata.category(c) != 'Mn')
+    # Corrección limpia para ignorar los caracteres de acentuación ('Mn')
+    txt = ''.join(c for c in txt if unicodedata.category(c) != 'Mn')
     txt = re.sub(r'[^A-Z0-9]', ' ', txt)
     return re.sub(r'\s+', ' ', txt).strip()
 
