@@ -1,4 +1,3 @@
-# 1. Instalación de librerías
 import streamlit as st
 import pandas as pd
 import openpyxl
@@ -9,7 +8,7 @@ import plotly.express as px
 
 # Configuración de la página de Streamlit
 st.set_page_config(
-    page_title="Auditoría de Faltantes - Postobón",
+    page_title="Auditoría de Faltantes - Postobón Jamundí",
     page_icon="🥤",
     layout="wide"
 )
@@ -21,7 +20,6 @@ def remover_tildes_y_raros(texto):
     if pd.isna(texto): return ""
     txt = str(texto).upper().strip()
     txt = unicodedata.normalize('NFD', txt)
-    # Corrección limpia para ignorar los caracteres de acentuación ('Mn')
     txt = ''.join(c for c in txt if unicodedata.category(c) != 'Mn')
     txt = re.sub(r'[^A-Z0-9]', ' ', txt)
     return re.sub(r'\s+', ' ', txt).strip()
@@ -57,9 +55,9 @@ def formatear_fecha_ui(val_dt):
 # --- CARGA Y PROCESAMIENTO DEL ARCHIVO ---
 def cargar_y_limpiar(file_obj):
     if file_obj is None: return pd.DataFrame()
-    
-    # En Streamlit los archivos subidos actúan como buffers binarios / paths temporales
     filename = file_obj.name
+    df_raw = pd.DataFrame()
+    
     if filename.endswith('.csv'):
         encodings = ['utf-8-sig', 'latin1', 'cp1252', 'utf-8']
         for enc in encodings:
@@ -72,6 +70,8 @@ def cargar_y_limpiar(file_obj):
         wb = openpyxl.load_workbook(file_obj, data_only=True)
         sheet = wb.active
         df_raw = pd.DataFrame(list(sheet.values))
+        
+    if df_raw.empty: return pd.DataFrame()
         
     df_raw = df_raw.dropna(how='all').reset_index(drop=True)
     
@@ -135,12 +135,15 @@ def cargar_y_limpiar(file_obj):
     return df
 
 
-# --- AUDITORÍA Y CLASIFICACIÓN ---
+# --- AUDITORÍA Y CLASIFICACIÓN (JAMUNDÍ) ---
 def procesar_archivos(file_hist, file_anexo):
     if file_anexo is None:
-        return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
         
     df_anexo = cargar_y_limpiar(file_anexo)
+    
+    # Si suben histórico, podemos comparar omisiones; si no, evaluamos el anexo directo
+    df_hist = cargar_y_limpiar(file_hist) if file_hist is not None else pd.DataFrame()
     
     saldados = df_anexo[df_anexo['Saldo_Num'] == 0].copy()
     con_saldo = df_anexo[df_anexo['Saldo_Num'] > 0].copy()
@@ -156,6 +159,19 @@ def procesar_archivos(file_hist, file_anexo):
     nuevos = con_saldo[es_mes_actual].copy()
     pendientes = con_saldo.drop(nuevos.index).copy()
     
+    # Detección de omitidos si hay histórico cargado
+    omitidos = pd.DataFrame()
+    if not df_hist.empty:
+        pendientes_hist = df_hist[df_hist['Saldo_Num'] > 0].copy()
+        claves_anexo_hoy = set(zip(con_saldo['Deudor_SAP_OK'], con_saldo['Saldo_Num']))
+        omitidos_list = []
+        for _, row in pendientes_hist.iterrows():
+            clave = (row['Deudor_SAP_OK'], row['Saldo_Num'])
+            if clave not in claves_anexo_hoy and row['Fecha_DT'] < con_saldo['Fecha_DT'].max():
+                omitidos_list.append(row)
+        if omitidos_list:
+            omitidos = pd.DataFrame(omitidos_list)
+            
     def preparar_df_ui(df_in):
         if df_in.empty:
             return pd.DataFrame(columns=['Nombre Deudor / Transportador', 'SAP', 'Fecha (DD/MM/AAAA)', 'Valor Faltante ($)', 'Abonos ($)', 'Saldo Pendiente ($)'])
@@ -169,27 +185,41 @@ def procesar_archivos(file_hist, file_anexo):
     df_nuevos_ui = preparar_df_ui(nuevos)
     df_saldados_ui = preparar_df_ui(saldados)
     df_pendientes_ui = preparar_df_ui(pendientes)
+    df_omitidos_ui = preparar_df_ui(omitidos)
     
     tot_nuevos = nuevos['Saldo_Num'].sum() if not nuevos.empty else 0
     tot_saldados = saldados['Abonos_Num'].sum() if not saldados.empty else 0
     tot_pendientes = pendientes['Saldo_Num'].sum() if not pendientes.empty else 0
+    tot_omitidos = omitidos['Saldo_Num'].sum() if not omitidos.empty else 0
     
     m_str = f"## 🥤 **AUDITORÍA DE FALTANTES - POSTOBÓN JAMUNDÍ**\n\n"
     m_str += f"- 🔴 **Nuevos Faltantes (Mes Actual con/sin abonos):** {len(nuevos)} registro(s) | **${int(tot_nuevos):,}**\n"
     m_str += f"- 🟢 **Faltantes Saldados / Pagados:** {len(saldados)} registro(s) | **${int(tot_saldados):,}**\n"
     m_str += f"- 🟣 **Pendientes Activos (Meses Anteriores):** {len(pendientes)} registro(s) | **${int(tot_pendientes):,}**\n"
+    if not omitidos.empty:
+        m_str += f"- ⚠️ **Omitidos en Anexo (Revisar):** {len(omitidos)} registro(s) | **${int(tot_omitidos):,}**\n"
     
+    categorias = ['Nuevos Faltantes', 'Faltantes Saldados', 'Pendientes Activos']
+    cantidades = [len(nuevos), len(saldados), len(pendientes)]
+    montos = [tot_nuevos, tot_saldados, tot_pendientes]
+    colores = {'Nuevos Faltantes': '#EF553B', 'Faltantes Saldados': '#00CC96', 'Pendientes Activos': '#AB63FA', 'Omitidos en Anexo': '#FFA15A'}
+    
+    if not omitidos.empty:
+        categorias.append('Omitidos en Anexo')
+        cantidades.append(len(omitidos))
+        montos.append(tot_omitidos)
+        
     df_summary = pd.DataFrame({
-        'Categoría': ['Nuevos Faltantes', 'Faltantes Saldados', 'Pendientes Activos'],
-        'Cantidad': [len(nuevos), len(saldados), len(pendientes)],
-        'Monto': [tot_nuevos, tot_saldados, tot_pendientes]
+        'Categoría': categorias,
+        'Cantidad': cantidades,
+        'Monto': montos
     })
     
     fig_pie = px.pie(
         df_summary, values='Cantidad', names='Categoría',
         title="<b>Distribución por Cantidad de Casos</b>",
         color='Categoría',
-        color_discrete_map={'Nuevos Faltantes': '#EF553B', 'Faltantes Saldados': '#00CC96', 'Pendientes Activos': '#AB63FA'},
+        color_discrete_map=colores,
         hole=0.4
     )
     
@@ -197,15 +227,15 @@ def procesar_archivos(file_hist, file_anexo):
         df_summary, x='Categoría', y='Monto', text_auto='.0f',
         title="<b>Impacto Financiero Real ($ COP)</b>",
         color='Categoría',
-        color_discrete_map={'Nuevos Faltantes': '#EF553B', 'Faltantes Saldados': '#00CC96', 'Pendientes Activos': '#AB63FA'}
+        color_discrete_map=colores
     )
     fig_bar.update_layout(showlegend=False, yaxis_title="Monto ($)")
     
-    return m_str, fig_pie, fig_bar, df_nuevos_ui, df_saldados_ui, df_pendientes_ui
+    return m_str, fig_pie, fig_bar, df_nuevos_ui, df_saldados_ui, df_pendientes_ui, df_omitidos_ui
 
 
 # --- INTERFAZ EN STREAMLIT ---
-st.markdown("# 🥤 **POSTOBÓN - SISTEMA DE AUDITORÍA DE FALTANTES EN CAJA**")
+st.markdown("# 🥤 **POSTOBÓN - SISTEMA DE AUDITORÍA DE FALTANTES EN CAJA (JAMUNDÍ)**")
 
 col1, col2 = st.columns([1, 1])
 
@@ -222,13 +252,12 @@ if ejecutar:
     if file_anexo is None:
         st.warning("⚠️ Por favor sube el Anexo del día para realizar la auditoría.")
     else:
-        with st.spinner("Procesando datos y limpiando registros..."):
-            m_str, fig_pie, fig_bar, df_nuevos, df_saldados, df_pendientes = procesar_archivos(file_hist, file_anexo)
+        with st.spinner("Procesando datos y limpiando registros de Jamundí..."):
+            m_str, fig_pie, fig_bar, df_nuevos, df_saldados, df_pendientes, df_omitidos = procesar_archivos(file_hist, file_anexo)
             
         st.markdown("---")
         st.markdown(m_str)
         
-        # Mostrar gráficos en dos columnas
         gcol1, gcol2 = st.columns(2)
         with gcol1:
             st.plotly_chart(fig_pie, use_container_width=True)
@@ -237,7 +266,7 @@ if ejecutar:
             
         st.markdown("## 📄 **Detalle Completo de Registros**")
         
-        tab1, tab2, tab3 = st.tabs(["🔴 Nuevos Faltantes", "🟢 Faltantes Saldados / Pagados", "🟣 Pendientes Activos"])
+        tab1, tab2, tab3, tab4 = st.tabs(["🔴 Nuevos Faltantes", "🟢 Faltantes Saldados / Pagados", "🟣 Pendientes Activos", "⚠️ Omitidos en Anexo"])
         
         with tab1:
             st.dataframe(df_nuevos, use_container_width=True)
@@ -245,5 +274,11 @@ if ejecutar:
             st.dataframe(df_saldados, use_container_width=True)
         with tab3:
             st.dataframe(df_pendientes, use_container_width=True)
+        with tab4:
+            if df_omitidos.empty:
+                st.info("No hay registros omitidos detectados o no se cargó el histórico maestro para comparación.")
+            else:
+                st.markdown("### ⚠️ Atención: Estos faltantes estaban en el histórico con saldo, pero desaparecieron del anexo de hoy. Valida si el cajero los omitió por error.")
+                st.dataframe(df_omitidos, use_container_width=True)
 else:
     st.info("💡 Sube los archivos en la parte superior y presiona el botón **EJECUTAR AUDITORÍA** para comenzar.")
