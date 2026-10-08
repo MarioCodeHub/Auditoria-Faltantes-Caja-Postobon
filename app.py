@@ -136,13 +136,12 @@ def cargar_y_limpiar(file_obj):
 
 
 # --- AUDITORÍA Y CLASIFICACIÓN (JAMUNDÍ) ---
+# --- AUDITORÍA Y CLASIFICACIÓN (JAMUNDÍ) ---
 def procesar_archivos(file_hist, file_anexo):
     if file_anexo is None:
         return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
         
     df_anexo = cargar_y_limpiar(file_anexo)
-    
-    # Si suben histórico, podemos comparar omisiones; si no, evaluamos el anexo directo
     df_hist = cargar_y_limpiar(file_hist) if file_hist is not None else pd.DataFrame()
     
     saldados = df_anexo[df_anexo['Saldo_Num'] == 0].copy()
@@ -159,16 +158,21 @@ def procesar_archivos(file_hist, file_anexo):
     nuevos = con_saldo[es_mes_actual].copy()
     pendientes = con_saldo.drop(nuevos.index).copy()
     
-    # Detección de omitidos si hay histórico cargado
+    # --- NUEVA LÓGICA ROBUSTA PARA DETECTAR OMITIDOS ---
     omitidos = pd.DataFrame()
     if not df_hist.empty:
         pendientes_hist = df_hist[df_hist['Saldo_Num'] > 0].copy()
-        claves_anexo_hoy = set(zip(con_saldo['Deudor_SAP_OK'], con_saldo['Saldo_Num']))
+        
+        # Obtenemos todos los SAPs que SÍ están activos en el anexo de hoy
+        saps_activos_hoy = set(con_saldo['Deudor_SAP_OK'].astype(str).str.strip())
+        
         omitidos_list = []
         for _, row in pendientes_hist.iterrows():
-            clave = (row['Deudor_SAP_OK'], row['Saldo_Num'])
-            if clave not in claves_anexo_hoy and row['Fecha_DT'] < con_saldo['Fecha_DT'].max():
+            sap_hist = str(row['Deudor_SAP_OK']).strip()
+            # Si el SAP del histórico con saldo YA NO está en el anexo de hoy, fue omitido
+            if sap_hist and sap_hist not in saps_activos_hoy:
                 omitidos_list.append(row)
+                
         if omitidos_list:
             omitidos = pd.DataFrame(omitidos_list)
             
@@ -198,7 +202,7 @@ def procesar_archivos(file_hist, file_anexo):
     m_str += f"- 🟣 **Pendientes Activos (Meses Anteriores):** {len(pendientes)} registro(s) | **${int(tot_pendientes):,}**\n"
     if not omitidos.empty:
         m_str += f"- ⚠️ **Omitidos en Anexo (Revisar):** {len(omitidos)} registro(s) | **${int(tot_omitidos):,}**\n"
-    
+        
     categorias = ['Nuevos Faltantes', 'Faltantes Saldados', 'Pendientes Activos']
     cantidades = [len(nuevos), len(saldados), len(pendientes)]
     montos = [tot_nuevos, tot_saldados, tot_pendientes]
@@ -232,7 +236,6 @@ def procesar_archivos(file_hist, file_anexo):
     fig_bar.update_layout(showlegend=False, yaxis_title="Monto ($)")
     
     return m_str, fig_pie, fig_bar, df_nuevos_ui, df_saldados_ui, df_pendientes_ui, df_omitidos_ui
-
 
 # --- INTERFAZ EN STREAMLIT ---
 st.markdown("# 🥤 **POSTOBÓN - SISTEMA DE AUDITORÍA DE FALTANTES EN CAJA (JAMUNDÍ)**")
