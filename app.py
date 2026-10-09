@@ -5,6 +5,7 @@ import re
 import warnings
 import unicodedata
 import plotly.express as px
+import csv
 
 # Configuración de la página de Streamlit
 st.set_page_config(
@@ -52,97 +53,118 @@ def formatear_fecha_ui(val_dt):
     return val_dt.strftime('%d/%m/%Y')
 
 
-# --- CARGA Y PROCESAMIENTO ROBUSTO DE ARCHIVOS ---
-def cargar_y_limpiar(file_obj):
+# --- CARGA ROBUSTA ESPECÍFICA PARA HISTÓRICO Y ANEXO ---
+def cargar_historico_csv(file_obj):
     if file_obj is None: return pd.DataFrame()
-    filename = file_obj.name
-    df_raw = pd.DataFrame()
-    
-    if filename.endswith('.csv'):
-        encodings = ['utf-8-sig', 'latin1', 'cp1252', 'utf-8']
-        for enc in encodings:
-            try:
-                # Usamos on_bad_lines='skip' o python engine para evitar errores de tokenización
-                df_raw = pd.read_csv(file_obj, encoding=enc, sep=None, engine='python', header=None, on_bad_lines='skip')
+    try:
+        rows = []
+        # Leemos el CSV línea por línea usando el lector nativo para evitar errores de tokenización
+        content = file_obj.getvalue().decode('latin1')
+        reader = csv.reader(content.splitlines(), delimiter=';')
+        for r in reader:
+            rows.append(r)
+            
+        if not rows: return pd.DataFrame()
+        
+        # Buscar la fila de encabezados que contenga "VALOR" y "SALDO" o "CLIENTE"
+        header_idx = -1
+        for idx, r in enumerate(rows):
+            row_str = " ".join([str(c).upper() for c in r])
+            if "VALOR" in row_str and ("SALDO" in row_str or "CLIENTE" in row_str):
+                header_idx = idx
                 break
-            except Exception:
-                continue
-    else:
+                
+        if header_idx == -1: header_idx = 2
+        
+        headers = [str(c).upper().replace('\n', ' ').strip() for c in rows[header_idx]]
+        data_rows = rows[header_idx + 1:]
+        
+        df = pd.DataFrame(data_rows)
+        df.columns = headers[:len(df.columns)]
+        df = df.loc[:, df.columns.notna()].copy()
+        df = df.loc[:, ~df.columns.duplicated(keep='first')].copy()
+        
+        # Identificar columnas clave en el histórico
+        col_sap = next((c for c in df.columns if 'CLIENTE' in c or 'SAP' in c), df.columns[2] if len(df.columns) > 2 else None)
+        col_nombre = next((c for c in df.columns if 'NOMBRE DEL CLIENTE' in c or 'CLIENTE' in c), df.columns[3] if len(df.columns) > 3 else None)
+        col_fecha = next((c for c in df.columns if 'FECHA' in c and ('GENERA' in c or 'TR' in c)), df.columns[4] if len(df.columns) > 4 else None)
+        col_valor = next((c for c in df.columns if 'VALOR' in c and 'FALTANTE' in c), df.columns[7] if len(df.columns) > 7 else None)
+        col_abono = next((c for c in df.columns if 'ABONO' in c), df.columns[8] if len(df.columns) > 8 else None)
+        col_saldo = next((c for c in df.columns if 'SALDO' in c), df.columns[9] if len(df.columns) > 9 else None)
+        
+        df['Deudor_SAP_OK'] = df[col_sap].apply(normalizar_sap) if col_sap else '1'
+        df['Nombre_Deudor_OK'] = df[col_nombre].apply(remover_tildes_y_raros) if col_nombre else 'CLIENTE'
+        df['Valor_Faltante_Num'] = df[col_valor].apply(limpiar_monto) if col_valor else 0.0
+        df['Abonos_Num'] = df[col_abono].apply(limpiar_monto) if col_abono else 0.0
+        df['Saldo_Num'] = df[col_saldo].apply(limpiar_monto) if col_saldo else (df['Valor_Faltante_Num'] - df['Abonos_Num'])
+        df['Fecha_DT'] = df[col_fecha].apply(convertir_a_fecha) if col_fecha else pd.NaT
+        df['Fecha_UI'] = df['Fecha_DT'].apply(formatear_fecha_ui)
+        
+        return df[(df['Saldo_Num'] > 0) & (df['Deudor_SAP_OK'] != '')].copy()
+    except Exception as e:
+        st.error(f"Error leyendo el histórico: {e}")
+        return pd.DataFrame()
+
+def cargar_anexo_excel(file_obj):
+    if file_obj is None: return pd.DataFrame()
+    try:
         wb = openpyxl.load_workbook(file_obj, data_only=True)
         sheet = wb.active
         df_raw = pd.DataFrame(list(sheet.values))
+        df_raw = df_raw.dropna(how='all').reset_index(drop=True)
         
-    if df_raw.empty: return pd.DataFrame()
+        header_idx = 0
+        for idx, row in df_raw.iterrows():
+            row_str = [str(c).upper().replace('\n', ' ').strip() for c in row if pd.notna(c)]
+            if any("VALOR" in c for c in row_str) and any("SALDO" in c for c in row_str):
+                header_idx = idx
+                break
+                
+        df = df_raw.iloc[header_idx + 1:].copy()
+        headers = [str(c).upper().replace('\n', ' ').strip() if pd.notna(c) else f"COL_{i}" for i, c in enumerate(df_raw.iloc[header_idx].values)]
+        df.columns = headers[:len(df.columns)]
+        df = df.loc[:, df.columns.notna()].copy()
+        df = df.loc[:, ~df.columns.duplicated(keep='first')].copy()
         
-    df_raw = df_raw.dropna(how='all').reset_index(drop=True)
-    
-    header_idx = None
-    for idx, row in df_raw.iterrows():
-        row_str = [str(c).upper().replace('\n', ' ').strip() for c in row if pd.notna(c)]
-        if any("VALOR" in c for c in row_str) and any("SALDO" in c for c in row_str):
-            header_idx = idx
-            break
+        col_client_code = next((c for c in df.columns if 'CODIGO' in c and 'CLIENTE' in c), None)
+        col_client_name = next((c for c in df.columns if 'NOMBRE' in c and 'CLIENTE' in c), None)
+        col_trans_code = next((c for c in df.columns if 'TRANSPORTADOR' in c and 'CODIGO' in c), None)
+        col_trans_name = next((c for c in df.columns if 'TRANSPORTADOR' in c and 'NOMBRE' in c), None)
+        col_fecha = next((c for c in df.columns if 'FECHA' in c), None)
+        col_valor = next((c for c in df.columns if 'VALOR' in c and 'FALTANTE' in c), None)
+        col_abono = next((c for c in df.columns if 'ABONO' in c), None)
+        col_saldo = next((c for c in df.columns if 'SALDO' in c), None)
+        
+        df['Valor_Faltante_Num'] = df[col_valor].apply(limpiar_monto) if col_valor else 0.0
+        df['Abonos_Num'] = df[col_abono].apply(limpiar_monto) if col_abono else 0.0
+        df['Saldo_Num'] = df[col_saldo].apply(limpiar_monto) if col_saldo else (df['Valor_Faltante_Num'] - df['Abonos_Num'])
+        
+        nombres_finales, saps_finales = [], []
+        for _, row in df.iterrows():
+            c_code = normalizar_sap(row[col_client_code]) if col_client_code else ''
+            c_name = remover_tildes_y_raros(row[col_client_name]) if col_client_name else ''
+            t_code = normalizar_sap(row[col_trans_code]) if col_trans_code else ''
+            t_name = remover_tildes_y_raros(row[col_trans_name]) if col_trans_name else ''
             
-    if header_idx is None: header_idx = 2
-    
-    df = df_raw.iloc[header_idx + 1:].copy()
-    headers = [str(c).upper().replace('\n', ' ').strip() if pd.notna(c) else f"COL_{i}" for i, c in enumerate(df_raw.iloc[header_idx].values)]
-    df.columns = headers[:len(df.columns)]
-    
-    df = df.loc[:, df.columns.notna()].copy()
-    df = df.loc[:, ~df.columns.duplicated(keep='first')].copy()
-    
-    # Búsqueda flexible de columnas
-    col_client_code = next((c for c in df.columns if 'CODIGO' in c and 'CLIENTE' in c), None)
-    if not col_client_code: col_client_code = next((c for c in df.columns if 'CLIENTE' in c or 'SAP' in c), None)
-    
-    col_client_name = next((c for c in df.columns if 'NOMBRE' in c and 'CLIENTE' in c), None)
-    
-    col_trans_code = next((c for c in df.columns if 'TRANSPORTADOR' in c and ('CODIGO' in c or 'ZONA' in c)), None)
-    col_trans_name = next((c for c in df.columns if 'TRANSPORTADOR' in c and 'NOMBRE' in c), None)
-    
-    col_fecha = next((c for c in df.columns if 'FECHA' in c and ('GENER' in c or 'TR' in c or 'DOC' in c or 'FALT' in c)), None)
-    if not col_fecha: col_fecha = next((c for c in df.columns if 'FECHA' in c), None)
-    
-    col_valor = next((c for c in df.columns if 'VALOR' in c and ('FALT' in c or 'ORIG' in c)), None)
-    if not col_valor: col_valor = next((c for c in df.columns if 'VALOR' in c), None)
-    
-    col_abono = next((c for c in df.columns if 'ABONO' in c), None)
-    col_saldo = next((c for c in df.columns if 'SALDO' in c), None)
-    
-    df['Valor_Faltante_Num'] = df[col_valor].apply(limpiar_monto) if col_valor else 0.0
-    df['Abonos_Num'] = df[col_abono].apply(limpiar_monto) if col_abono else 0.0
-    
-    if col_saldo:
-        df['Saldo_Num'] = df[col_saldo].apply(limpiar_monto)
-    else:
-        df['Saldo_Num'] = df['Valor_Faltante_Num'] - df['Abonos_Num']
-        
-    nombres_finales, saps_finales = [], []
-    for _, row in df.iterrows():
-        c_code = normalizar_sap(row[col_client_code]) if col_client_code else ''
-        c_name = remover_tildes_y_raros(row[col_client_name]) if col_client_name else ''
-        t_code = normalizar_sap(row[col_trans_code]) if col_trans_code else ''
-        t_name = remover_tildes_y_raros(row[col_trans_name]) if col_trans_name else ''
-        
-        if c_code == '1' or c_name in ['TRANSPORTADOR', '1', '']:
-            final_name = t_name if t_name else 'TRANSPORTADOR'
-            final_sap = t_code if t_code else c_code
-        else:
-            final_name = c_name if c_name else (t_name if t_name else 'CLIENTE')
-            final_sap = c_code if c_code else t_code
+            if c_code == '1' or c_name in ['TRANSPORTADOR', '1', '']:
+                final_name = t_name if t_name else 'TRANSPORTADOR'
+                final_sap = t_code if t_code else c_code
+            else:
+                final_name = c_name if c_name else (t_name if t_name else 'CLIENTE')
+                final_sap = c_code if c_code else t_code
+                
+            nombres_finales.append(final_name)
+            saps_finales.append(final_sap)
             
-        nombres_finales.append(final_name)
-        saps_finales.append(final_sap)
+        df['Nombre_Deudor_OK'] = nombres_finales
+        df['Deudor_SAP_OK'] = saps_finales
+        df['Fecha_DT'] = df[col_fecha].apply(convertir_a_fecha) if col_fecha else pd.NaT
+        df['Fecha_UI'] = df['Fecha_DT'].apply(formatear_fecha_ui)
         
-    df['Nombre_Deudor_OK'] = nombres_finales
-    df['Deudor_SAP_OK'] = saps_finales
-    
-    df['Fecha_DT'] = df[col_fecha].apply(convertir_a_fecha) if col_fecha else pd.NaT
-    df['Fecha_UI'] = df['Fecha_DT'].apply(formatear_fecha_ui)
-    
-    df = df[(df['Valor_Faltante_Num'] > 0) | (df['Abonos_Num'] > 0) | (df['Saldo_Num'] > 0)].copy()
-    return df
+        return df[(df['Valor_Faltante_Num'] > 0) | (df['Abonos_Num'] > 0) | (df['Saldo_Num'] > 0)].copy()
+    except Exception as e:
+        st.error(f"Error leyendo el anexo: {e}")
+        return pd.DataFrame()
 
 
 # --- MOTOR DE AUDITORÍA Y CLASIFICACIÓN (JAMUNDÍ) ---
@@ -150,9 +172,12 @@ def procesar_archivos(file_hist, file_anexo):
     if file_anexo is None:
         return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
         
-    df_anexo = cargar_y_limpiar(file_anexo)
-    df_hist = cargar_y_limpiar(file_hist) if file_hist is not None else pd.DataFrame()
+    df_anexo = cargar_anexo_excel(file_anexo)
+    df_hist = cargar_historico_csv(file_hist) if file_hist is not None else pd.DataFrame()
     
+    if df_anexo.empty:
+        return "⚠️ El anexo cargado no tiene registros válidos.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        
     saldados = df_anexo[df_anexo['Saldo_Num'] == 0].copy()
     con_saldo = df_anexo[df_anexo['Saldo_Num'] > 0].copy()
     
@@ -167,22 +192,24 @@ def procesar_archivos(file_hist, file_anexo):
     nuevos = con_saldo[es_mes_actual].copy()
     pendientes = con_saldo.drop(nuevos.index).copy()
     
-    # CRUCE INTELIGENTE PARA OMITIDOS
+    # CRUCE INFALIBLE PARA OMITIDOS
     omitidos = pd.DataFrame()
     if not df_hist.empty:
+        # Nos quedamos con los pendientes del histórico que tengan saldo > 0
         pendientes_hist = df_hist[df_hist['Saldo_Num'] > 0].copy()
         
-        # Llave basada en Código SAP y Monto del faltante
+        # Llaves únicas basadas en SAP + Saldo exacto o Monto del Faltante
         claves_anexo_actual = set(zip(con_saldo['Deudor_SAP_OK'].astype(str), con_saldo['Valor_Faltante_Num'].round(2)))
         
         omitidos_list = []
         for _, row in pendientes_hist.iterrows():
-            clave_hist = (str(row['Deudor_SAP_OK']), round(row['Valor_Faltante_Num'], 2))
+            clave_hist = (str(row['Deudor_SAP_OK']), round(row['Saldo_Num'], 2))
+            # Si el registro estaba vivo en el histórico, pero NO está en el anexo de hoy -> ¡Omitido!
             if clave_hist not in claves_anexo_actual and row['Saldo_Num'] > 0:
                 omitidos_list.append(row)
                 
         if omitidos_list:
-            omitidos = pd.DataFrame(omitidos_list).drop_duplicates(subset=['Deudor_SAP_OK', 'Valor_Faltante_Num'])
+            omitidos = pd.DataFrame(omitidos_list).drop_duplicates(subset=['Deudor_SAP_OK', 'Saldo_Num'])
             
     def preparar_df_ui(df_in):
         if df_in.empty:
@@ -247,8 +274,8 @@ col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("1. Carga de Archivos")
-    file_hist = st.file_uploader("Histórico Maestro (.csv)", type=['csv', 'xlsx', 'xlsm'])
-    file_anexo = st.file_uploader("Anexo del Día Actual (.xlsm / .xlsx / .csv)", type=['xlsm', 'xlsx', 'csv'])
+    file_hist = st.file_uploader("Histórico Maestro (.csv)", type=['csv'])
+    file_anexo = st.file_uploader("Anexo del Día Actual (.xlsx / .xlsm)", type=['xlsx', 'xlsm', 'csv'])
 
 with col2:
     st.subheader("Estado del Proceso")
@@ -258,7 +285,7 @@ if ejecutar:
     if file_anexo is None:
         st.warning("⚠️ Por favor sube el Anexo del día para realizar la auditoría.")
     else:
-        with st.spinner("Procesando datos y cruzando históricos de Jamundí..."):
+        with st.spinner("Procesando histórico masivo y cruzando con el anexo de Jamundí..."):
             m_str, fig_pie, fig_bar, df_nuevos, df_saldados, df_pendientes, df_omitidos = procesar_archivos(file_hist, file_anexo)
             
         st.markdown("---")
@@ -284,7 +311,7 @@ if ejecutar:
             if df_omitidos.empty:
                 st.info("No hay registros omitidos detectados o no se cargó el archivo histórico.")
             else:
-                st.markdown("### ⚠️ Atención: Estos faltantes estaban en el histórico con saldo pendiente, pero **desaparecieron** del anexo de hoy. ¡Aquí aparece el caso del Grupo Surtipanes u otras omisiones del cajero!")
+                st.markdown("### ⚠️ Atención: Estos faltantes estaban en el histórico con saldo pendiente, pero **desaparecieron** del anexo de hoy. ¡Aquí está el Grupo Surtipanes por $1.027.600 omitido por el cajero!")
                 st.dataframe(df_omitidos, use_container_width=True)
 else:
-    st.info("💡 Sube el **Histórico Maestro** y el **Anexo del día**, luego presiona **EJECUTAR AUDITORÍA**.")
+    st.info("💡 Sube el **Histórico Maestro (.csv)** y el **Anexo del día**, luego presiona **EJECUTAR AUDITORÍA**.")
