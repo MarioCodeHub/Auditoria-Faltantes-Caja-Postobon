@@ -136,7 +136,6 @@ def cargar_y_limpiar(file_obj):
 
 
 # --- AUDITORÍA Y CLASIFICACIÓN (JAMUNDÍ) ---
-# --- AUDITORÍA Y CLASIFICACIÓN (JAMUNDÍ) ---
 def procesar_archivos(file_hist, file_anexo):
     if file_anexo is None:
         return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -158,23 +157,24 @@ def procesar_archivos(file_hist, file_anexo):
     nuevos = con_saldo[es_mes_actual].copy()
     pendientes = con_saldo.drop(nuevos.index).copy()
     
-    # --- NUEVA LÓGICA ROBUSTA PARA DETECTAR OMITIDOS ---
+    # CRUCE INTELIGENTE PARA DETECTAR OMITIDOS
     omitidos = pd.DataFrame()
     if not df_hist.empty:
+        # Buscamos qué registros tenían saldo pendiente en el histórico
         pendientes_hist = df_hist[df_hist['Saldo_Num'] > 0].copy()
         
-        # Obtenemos todos los SAPs que SÍ están activos en el anexo de hoy
-        saps_activos_hoy = set(con_saldo['Deudor_SAP_OK'].astype(str).str.strip())
+        # Claves únicas basadas en SAP, Valor y Fecha del anexo actual para ver quiénes sí están
+        claves_anexo_actual = set(zip(con_saldo['Deudor_SAP_OK'], con_saldo['Valor_Faltante_Num'], con_saldo['Fecha_DT']))
         
         omitidos_list = []
         for _, row in pendientes_hist.iterrows():
-            sap_hist = str(row['Deudor_SAP_OK']).strip()
-            # Si el SAP del histórico con saldo YA NO está en el anexo de hoy, fue omitido
-            if sap_hist and sap_hist not in saps_activos_hoy:
+            clave_hist = (row['Deudor_SAP_OK'], row['Valor_Faltante_Num'], row['Fecha_DT'])
+            # Si el registro estaba vivo en el histórico, pero NO aparece por ningún lado en el anexo de hoy -> ¡Fue omitido!
+            if clave_hist not in claves_anexo_actual and row['Saldo_Num'] > 0:
                 omitidos_list.append(row)
                 
         if omitidos_list:
-            omitidos = pd.DataFrame(omitidos_list)
+            omitidos = pd.DataFrame(omitidos_list).drop_duplicates(subset=['Deudor_SAP_OK', 'Valor_Faltante_Num', 'Fecha_DT'])
             
     def preparar_df_ui(df_in):
         if df_in.empty:
@@ -197,22 +197,16 @@ def procesar_archivos(file_hist, file_anexo):
     tot_omitidos = omitidos['Saldo_Num'].sum() if not omitidos.empty else 0
     
     m_str = f"## 🥤 **AUDITORÍA DE FALTANTES - POSTOBÓN JAMUNDÍ**\n\n"
-    m_str += f"- 🔴 **Nuevos Faltantes (Mes Actual con/sin abonos):** {len(nuevos)} registro(s) | **${int(tot_nuevos):,}**\n"
+    m_str += f"- 🔴 **Nuevos Faltantes (Mes Actual):** {len(nuevos)} registro(s) | **${int(tot_nuevos):,}**\n"
     m_str += f"- 🟢 **Faltantes Saldados / Pagados:** {len(saldados)} registro(s) | **${int(tot_saldados):,}**\n"
     m_str += f"- 🟣 **Pendientes Activos (Meses Anteriores):** {len(pendientes)} registro(s) | **${int(tot_pendientes):,}**\n"
-    if not omitidos.empty:
-        m_str += f"- ⚠️ **Omitidos en Anexo (Revisar):** {len(omitidos)} registro(s) | **${int(tot_omitidos):,}**\n"
-        
-    categorias = ['Nuevos Faltantes', 'Faltantes Saldados', 'Pendientes Activos']
-    cantidades = [len(nuevos), len(saldados), len(pendientes)]
-    montos = [tot_nuevos, tot_saldados, tot_pendientes]
+    m_str += f"- ⚠️ **Omitidos en Anexo (Revisar Negligencia):** {len(omitidos)} registro(s) | **${int(tot_omitidos):,}**\n"
+    
+    categorias = ['Nuevos Faltantes', 'Faltantes Saldados', 'Pendientes Activos', 'Omitidos en Anexo']
+    cantidades = [len(nuevos), len(saldados), len(pendientes), len(omitidos)]
+    montos = [tot_nuevos, tot_saldados, tot_pendientes, tot_omitidos]
     colores = {'Nuevos Faltantes': '#EF553B', 'Faltantes Saldados': '#00CC96', 'Pendientes Activos': '#AB63FA', 'Omitidos en Anexo': '#FFA15A'}
     
-    if not omitidos.empty:
-        categorias.append('Omitidos en Anexo')
-        cantidades.append(len(omitidos))
-        montos.append(tot_omitidos)
-        
     df_summary = pd.DataFrame({
         'Categoría': categorias,
         'Cantidad': cantidades,
@@ -237,6 +231,7 @@ def procesar_archivos(file_hist, file_anexo):
     
     return m_str, fig_pie, fig_bar, df_nuevos_ui, df_saldados_ui, df_pendientes_ui, df_omitidos_ui
 
+
 # --- INTERFAZ EN STREAMLIT ---
 st.markdown("# 🥤 **POSTOBÓN - SISTEMA DE AUDITORÍA DE FALTANTES EN CAJA (JAMUNDÍ)**")
 
@@ -244,7 +239,7 @@ col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("1. Carga de Archivos")
-    file_hist = st.file_uploader("Histórico Maestro (Opcional)", type=['csv', 'xlsx', 'xlsm'])
+    file_hist = st.file_uploader("Histórico Maestro (Obligatorio para detectar omitidos)", type=['csv', 'xlsx', 'xlsm'])
     file_anexo = st.file_uploader("Anexo del Día Actual (.xlsm / .xlsx / .csv)", type=['xlsm', 'xlsx', 'csv'])
 
 with col2:
@@ -255,7 +250,7 @@ if ejecutar:
     if file_anexo is None:
         st.warning("⚠️ Por favor sube el Anexo del día para realizar la auditoría.")
     else:
-        with st.spinner("Procesando datos y limpiando registros de Jamundí..."):
+        with st.spinner("Procesando datos y cruzando históricos de Jamundí..."):
             m_str, fig_pie, fig_bar, df_nuevos, df_saldados, df_pendientes, df_omitidos = procesar_archivos(file_hist, file_anexo)
             
         st.markdown("---")
@@ -279,9 +274,9 @@ if ejecutar:
             st.dataframe(df_pendientes, use_container_width=True)
         with tab4:
             if df_omitidos.empty:
-                st.info("No hay registros omitidos detectados o no se cargó el histórico maestro para comparación.")
+                st.info("No hay registros omitidos detectados o no se cargó el archivo de histórico maestro.")
             else:
-                st.markdown("### ⚠️ Atención: Estos faltantes estaban en el histórico con saldo, pero desaparecieron del anexo de hoy. Valida si el cajero los omitió por error.")
+                st.markdown("### ⚠️ Atención: Estos faltantes estaban en el histórico con saldo pendiente, pero **desaparecieron** del anexo de hoy. Aquí está el caso del Grupo Surtipanes u otros omitidos por el cajero.")
                 st.dataframe(df_omitidos, use_container_width=True)
 else:
-    st.info("💡 Sube los archivos en la parte superior y presiona el botón **EJECUTAR AUDITORÍA** para comenzar.")
+    st.info("💡 Sube el **Histórico Maestro** y el **Anexo del día**, luego presiona **EJECUTAR AUDITORÍA**.")
