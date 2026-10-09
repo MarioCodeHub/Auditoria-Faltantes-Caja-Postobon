@@ -9,7 +9,7 @@ import csv
 
 # Configuración de la página de Streamlit
 st.set_page_config(
-    page_title="Auditoría de Faltantes - Postobón jamundi",
+    page_title="Auditoría de Faltantes - Postobón",
     page_icon="🥤",
     layout="wide"
 )
@@ -101,7 +101,7 @@ def cargar_historico_csv(file_obj):
         df['Fecha_DT'] = df[col_fecha].apply(convertir_a_fecha) if col_fecha else pd.NaT
         df['Fecha_UI'] = df['Fecha_DT'].apply(formatear_fecha_ui)
         
-        return df[(df['Saldo_Num'] > 0) & (df['Deudor_SAP_OK'] != '') & (df['Fecha_DT'].notna())].copy()
+        return df[(df['Saldo_Num'] > 0) & (df['Deudor_SAP_OK'] != '') & (df['Fecha_DT'].notna()) & (df['Fecha_DT'].dt.year >= 2026)].copy()
     except Exception as e:
         return pd.DataFrame()
 
@@ -158,7 +158,7 @@ def cargar_anexo_excel(file_obj):
         return pd.DataFrame()
 
 
-# --- MOTOR DE AUDITORÍA Y CLASIFICACIÓN PERFECTO ---
+# --- MOTOR DE AUDITORÍA Y CLASIFICACIÓN ---
 def procesar_archivos(file_hist, file_anexo):
     if file_anexo is None:
         return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -176,7 +176,7 @@ def procesar_archivos(file_hist, file_anexo):
     else:
         mes_actual, anio_actual = 10, 2026
         
-    # 1. Saldados (Saldo == 0 en el anexo de hoy)
+    # 1. Saldados (Saldo == 0)
     saldados = df_anexo[df_anexo['Saldo_Num'] == 0].copy()
     
     # 2. Con saldo pendiente en el anexo de hoy
@@ -186,7 +186,7 @@ def procesar_archivos(file_hist, file_anexo):
     es_mes_actual = (con_saldo_anexo['Fecha_DT'].dt.month == mes_actual) & (con_saldo_anexo['Fecha_DT'].dt.year == anio_actual)
     nuevos = con_saldo_anexo[es_mes_actual].copy()
     
-    # Pendientes Activos (Meses anteriores que siguen vigentes en el anexo)
+    # Pendientes Activos (Meses anteriores que siguen vigentes en el anexo de hoy)
     pendientes = con_saldo_anexo.drop(nuevos.index).copy()
     
     # 3. Omitidos en Anexo (Estrictamente del mes actual que estaban en el histórico con saldo y faltan hoy)
@@ -283,7 +283,7 @@ if ejecutar:
     if file_anexo is None:
         st.warning("⚠️ Por favor sube el Anexo del día para realizar la auditoría.")
     else:
-        with st.spinner("Procesando auditoría limpia y exacta..."):
+        with st.spinner("Procesando auditoría de Jamundí..."):
             m_str, fig_pie, fig_bar, df_nuevos, df_saldados, df_pendientes, df_omitidos = procesar_archivos(file_hist, file_anexo)
             
         st.markdown("---")
