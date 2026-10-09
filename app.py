@@ -53,12 +53,11 @@ def formatear_fecha_ui(val_dt):
     return val_dt.strftime('%d/%m/%Y')
 
 
-# --- CARGA ROBUSTA ESPECÍFICA PARA HISTÓRICO Y ANEXO ---
+# --- CARGAR SOLO LAS FILAS RECIENTES DEL HISTÓRICO ---
 def cargar_historico_csv(file_obj):
     if file_obj is None: return pd.DataFrame()
     try:
         rows = []
-        # Leemos el CSV línea por línea usando el lector nativo para evitar errores de tokenización
         content = file_obj.getvalue().decode('latin1')
         reader = csv.reader(content.splitlines(), delimiter=';')
         for r in reader:
@@ -66,7 +65,6 @@ def cargar_historico_csv(file_obj):
             
         if not rows: return pd.DataFrame()
         
-        # Buscar la fila de encabezados que contenga "VALOR" y "SALDO" o "CLIENTE"
         header_idx = -1
         for idx, r in enumerate(rows):
             row_str = " ".join([str(c).upper() for c in r])
@@ -77,14 +75,16 @@ def cargar_historico_csv(file_obj):
         if header_idx == -1: header_idx = 2
         
         headers = [str(c).upper().replace('\n', ' ').strip() for c in rows[header_idx]]
+        # FILTRAR SOLO LAS ÚLTIMAS 2500 FILAS DEL HISTÓRICO PARA EVITAR BASURA ANTIGUA
         data_rows = rows[header_idx + 1:]
-        
+        if len(data_rows) > 2500:
+            data_rows = data_rows[-2500:]
+            
         df = pd.DataFrame(data_rows)
         df.columns = headers[:len(df.columns)]
         df = df.loc[:, df.columns.notna()].copy()
         df = df.loc[:, ~df.columns.duplicated(keep='first')].copy()
         
-        # Identificar columnas clave en el histórico
         col_sap = next((c for c in df.columns if 'CLIENTE' in c or 'SAP' in c), df.columns[2] if len(df.columns) > 2 else None)
         col_nombre = next((c for c in df.columns if 'NOMBRE DEL CLIENTE' in c or 'CLIENTE' in c), df.columns[3] if len(df.columns) > 3 else None)
         col_fecha = next((c for c in df.columns if 'FECHA' in c and ('GENERA' in c or 'TR' in c)), df.columns[4] if len(df.columns) > 4 else None)
@@ -100,6 +100,7 @@ def cargar_historico_csv(file_obj):
         df['Fecha_DT'] = df[col_fecha].apply(convertir_a_fecha) if col_fecha else pd.NaT
         df['Fecha_UI'] = df['Fecha_DT'].apply(formatear_fecha_ui)
         
+        # Solo mantener los que tengan saldo pendiente real y fecha reciente
         return df[(df['Saldo_Num'] > 0) & (df['Deudor_SAP_OK'] != '')].copy()
     except Exception as e:
         st.error(f"Error leyendo el histórico: {e}")
@@ -192,19 +193,21 @@ def procesar_archivos(file_hist, file_anexo):
     nuevos = con_saldo[es_mes_actual].copy()
     pendientes = con_saldo.drop(nuevos.index).copy()
     
-    # CRUCE INFALIBLE PARA OMITIDOS
+    # CRUCE PRECISIO PARA OMITIDOS (SOLO MES ACTUAL O RECIENTES)
     omitidos = pd.DataFrame()
     if not df_hist.empty:
-        # Nos quedamos con los pendientes del histórico que tengan saldo > 0
-        pendientes_hist = df_hist[df_hist['Saldo_Num'] > 0].copy()
+        # Filtrar solo los del mes actual en el histórico para evitar arrastrar cosas viejas
+        pendientes_hist = df_hist[
+            (df_hist['Saldo_Num'] > 0) & 
+            (df_hist['Fecha_DT'].dt.month == mes_actual) & 
+            (df_hist['Fecha_DT'].dt.year == anio_actual)
+        ].copy()
         
-        # Llaves únicas basadas en SAP + Saldo exacto o Monto del Faltante
-        claves_anexo_actual = set(zip(con_saldo['Deudor_SAP_OK'].astype(str), con_saldo['Valor_Faltante_Num'].round(2)))
+        claves_anexo_actual = set(zip(con_saldo['Deudor_SAP_OK'].astype(str), con_saldo['Saldo_Num'].round(2)))
         
         omitidos_list = []
         for _, row in pendientes_hist.iterrows():
             clave_hist = (str(row['Deudor_SAP_OK']), round(row['Saldo_Num'], 2))
-            # Si el registro estaba vivo en el histórico, pero NO está en el anexo de hoy -> ¡Omitido!
             if clave_hist not in claves_anexo_actual and row['Saldo_Num'] > 0:
                 omitidos_list.append(row)
                 
@@ -285,7 +288,7 @@ if ejecutar:
     if file_anexo is None:
         st.warning("⚠️ Por favor sube el Anexo del día para realizar la auditoría.")
     else:
-        with st.spinner("Procesando histórico masivo y cruzando con el anexo de Jamundí..."):
+        with st.spinner("Procesando auditoría limpia de Jamundí..."):
             m_str, fig_pie, fig_bar, df_nuevos, df_saldados, df_pendientes, df_omitidos = procesar_archivos(file_hist, file_anexo)
             
         st.markdown("---")
@@ -309,9 +312,9 @@ if ejecutar:
             st.dataframe(df_pendientes, use_container_width=True)
         with tab4:
             if df_omitidos.empty:
-                st.info("No hay registros omitidos detectados o no se cargó el archivo histórico.")
+                st.info("No hay registros omitidos detectados en el periodo actual.")
             else:
-                st.markdown("### ⚠️ Atención: Estos faltantes estaban en el histórico con saldo pendiente, pero **desaparecieron** del anexo de hoy. ¡Aquí está el Grupo Surtipanes por $1.027.600 omitido por el cajero!")
+                st.markdown("### ⚠️ Atención: Estos faltantes son del mes actual, estaban en el histórico con saldo pendiente, pero fueron omitidos en el anexo de hoy.")
                 st.dataframe(df_omitidos, use_container_width=True)
 else:
     st.info("💡 Sube el **Histórico Maestro (.csv)** y el **Anexo del día**, luego presiona **EJECUTAR AUDITORÍA**.")
