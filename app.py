@@ -52,7 +52,7 @@ def formatear_fecha_ui(val_dt):
     return val_dt.strftime('%d/%m/%Y')
 
 
-# --- CARGA Y PROCESAMIENTO ROBUSTO ---
+# --- CARGA Y PROCESAMIENTO ROBUSTO DE ARCHIVOS ---
 def cargar_y_limpiar(file_obj):
     if file_obj is None: return pd.DataFrame()
     filename = file_obj.name
@@ -62,7 +62,8 @@ def cargar_y_limpiar(file_obj):
         encodings = ['utf-8-sig', 'latin1', 'cp1252', 'utf-8']
         for enc in encodings:
             try:
-                df_raw = pd.read_csv(file_obj, encoding=enc, sep=None, engine='python', header=None)
+                # Usamos on_bad_lines='skip' o python engine para evitar errores de tokenización
+                df_raw = pd.read_csv(file_obj, encoding=enc, sep=None, engine='python', header=None, on_bad_lines='skip')
                 break
             except Exception:
                 continue
@@ -82,18 +83,18 @@ def cargar_y_limpiar(file_obj):
             header_idx = idx
             break
             
-    if header_idx is None: header_idx = 0
+    if header_idx is None: header_idx = 2
     
     df = df_raw.iloc[header_idx + 1:].copy()
     headers = [str(c).upper().replace('\n', ' ').strip() if pd.notna(c) else f"COL_{i}" for i, c in enumerate(df_raw.iloc[header_idx].values)]
-    df.columns = headers
+    df.columns = headers[:len(df.columns)]
     
     df = df.loc[:, df.columns.notna()].copy()
     df = df.loc[:, ~df.columns.duplicated(keep='first')].copy()
     
     # Búsqueda flexible de columnas
     col_client_code = next((c for c in df.columns if 'CODIGO' in c and 'CLIENTE' in c), None)
-    if not col_client_code: col_client_code = next((c for c in df.columns if 'CLIENTE' in c), None)
+    if not col_client_code: col_client_code = next((c for c in df.columns if 'CLIENTE' in c or 'SAP' in c), None)
     
     col_client_name = next((c for c in df.columns if 'NOMBRE' in c and 'CLIENTE' in c), None)
     
@@ -144,7 +145,7 @@ def cargar_y_limpiar(file_obj):
     return df
 
 
-# --- AUDITORÍA Y CLASIFICACIÓN (JAMUNDÍ) ---
+# --- MOTOR DE AUDITORÍA Y CLASIFICACIÓN (JAMUNDÍ) ---
 def procesar_archivos(file_hist, file_anexo):
     if file_anexo is None:
         return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -166,19 +167,17 @@ def procesar_archivos(file_hist, file_anexo):
     nuevos = con_saldo[es_mes_actual].copy()
     pendientes = con_saldo.drop(nuevos.index).copy()
     
-    # CRUCE INTELIGENTE Y FLEXIBLE PARA OMITIDOS
+    # CRUCE INTELIGENTE PARA OMITIDOS
     omitidos = pd.DataFrame()
     if not df_hist.empty:
-        # Filtramos los que tenían saldo en el histórico
         pendientes_hist = df_hist[df_hist['Saldo_Num'] > 0].copy()
         
-        # Creamos conjuntos de identificación flexibles usando SAP y Monto exacto
+        # Llave basada en Código SAP y Monto del faltante
         claves_anexo_actual = set(zip(con_saldo['Deudor_SAP_OK'].astype(str), con_saldo['Valor_Faltante_Num'].round(2)))
         
         omitidos_list = []
         for _, row in pendientes_hist.iterrows():
             clave_hist = (str(row['Deudor_SAP_OK']), round(row['Valor_Faltante_Num'], 2))
-            # Si el registro estaba en el histórico pero NO aparece en el anexo de hoy, ¡cayó en omisión!
             if clave_hist not in claves_anexo_actual and row['Saldo_Num'] > 0:
                 omitidos_list.append(row)
                 
@@ -248,7 +247,7 @@ col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("1. Carga de Archivos")
-    file_hist = st.file_uploader("Histórico Maestro (Obligatorio para detectar omitidos)", type=['csv', 'xlsx', 'xlsm'])
+    file_hist = st.file_uploader("Histórico Maestro (.csv)", type=['csv', 'xlsx', 'xlsm'])
     file_anexo = st.file_uploader("Anexo del Día Actual (.xlsm / .xlsx / .csv)", type=['xlsm', 'xlsx', 'csv'])
 
 with col2:
@@ -283,7 +282,7 @@ if ejecutar:
             st.dataframe(df_pendientes, use_container_width=True)
         with tab4:
             if df_omitidos.empty:
-                st.info("No hay registros omitidos detectados o no se cargó el archivo de histórico maestro correctamente.")
+                st.info("No hay registros omitidos detectados o no se cargó el archivo histórico.")
             else:
                 st.markdown("### ⚠️ Atención: Estos faltantes estaban en el histórico con saldo pendiente, pero **desaparecieron** del anexo de hoy. ¡Aquí aparece el caso del Grupo Surtipanes u otras omisiones del cajero!")
                 st.dataframe(df_omitidos, use_container_width=True)
