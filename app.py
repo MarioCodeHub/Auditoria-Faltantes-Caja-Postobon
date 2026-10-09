@@ -26,7 +26,7 @@ def remover_tildes_y_raros(texto):
     return re.sub(r'\s+', ' ', txt).strip()
 
 def normalizar_sap(val):
-    if pd.isna(val): return ""
+    if pd.isna(val): return "1"
     txt = str(val).strip().split('.')[0]
     txt = re.sub(r'\D', '', txt)
     if txt in ['1', ''] or not txt: return '1'
@@ -139,17 +139,17 @@ def cargar_anexo_excel(file_obj):
         
         nombres_finales, saps_finales = [], []
         for _, row in df.iterrows():
-            c_code = normalizar_sap(row[col_client_code]) if col_client_code else ''
+            c_code = normalizar_sap(row[col_client_code]) if col_client_code else '1'
             c_name = remover_tildes_y_raros(row[col_client_name]) if col_client_name else ''
-            t_code = normalizar_sap(row[col_trans_code]) if col_trans_code else ''
+            t_code = normalizar_sap(row[col_trans_code]) if col_trans_code else '1'
             t_name = remover_tildes_y_raros(row[col_trans_name]) if col_trans_name else ''
             
             if c_code == '1' or c_name in ['TRANSPORTADOR', '1', '']:
                 final_name = t_name if t_name else 'TRANSPORTADOR'
-                final_sap = t_code if t_code else c_code
+                final_sap = t_code if t_code != '1' else '1'
             else:
                 final_name = c_name if c_name else (t_name if t_name else 'CLIENTE')
-                final_sap = c_code if c_code else t_code
+                final_sap = c_code
                 
             nombres_finales.append(final_name)
             saps_finales.append(final_sap)
@@ -175,7 +175,7 @@ def procesar_archivos(file_hist, file_anexo):
     if df_anexo.empty:
         return "⚠️ El anexo cargado no tiene registros válidos.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
         
-    # Separar con saldo 0 en el anexo (Saldados reales de hoy)
+    # Separar saldados reales de hoy (saldo 0)
     saldados = df_anexo[df_anexo['Saldo_Num'] == 0].copy()
     con_saldo_anexo = df_anexo[df_anexo['Saldo_Num'] > 0].copy()
     
@@ -190,7 +190,7 @@ def procesar_archivos(file_hist, file_anexo):
     nuevos = con_saldo_anexo[es_mes_actual].copy()
     pendientes = con_saldo_anexo.drop(nuevos.index).copy()
     
-    # CRUCE PERFECTO PARA OMITIDOS: Solo los que están en el anexo DEBEN IGNORARSE de los omitidos
+    # CRUCE ESTRICTO PARA OMITIDOS: Validar tanto por SAP + Monto como por Monto exacto (para evitar falsos positivos de transportadores)
     omitidos = pd.DataFrame()
     if not df_hist.empty:
         pendientes_hist = df_hist[
@@ -199,14 +199,14 @@ def procesar_archivos(file_hist, file_anexo):
             (df_hist['Fecha_DT'].dt.year == anio_actual)
         ].copy()
         
-        # Llaves de lo que SÍ apareció en el anexo de hoy (sin importar si se abonó o si sigue con saldo)
-        claves_presentes_hoy = set(zip(df_anexo['Deudor_SAP_OK'].astype(str), df_anexo['Valor_Faltante_Num'].round(2)))
+        # Conjunto de montos exactos y SAPs presentes en TODO el anexo de hoy (incluyendo los saldados)
+        montos_presentes_hoy = set(df_anexo['Valor_Faltante_Num'].round(2))
         
         omitidos_list = []
         for _, row in pendientes_hist.iterrows():
-            clave_hist = (str(row['Deudor_SAP_OK']), round(row['Valor_Faltante_Num'], 2))
-            # Si el registro del histórico NO está presente en el anexo de hoy por ningún lado -> ¡Omitido real!
-            if clave_hist not in claves_presentes_hoy and row['Saldo_Num'] > 0:
+            monto_hist = round(row['Valor_Faltante_Num'], 2)
+            # Si el monto exacto NO está presente en el anexo de hoy, es 100% seguro que fue omitido
+            if monto_hist not in montos_presentes_hoy and row['Saldo_Num'] > 0:
                 omitidos_list.append(row)
                 
         if omitidos_list:
@@ -286,7 +286,7 @@ if ejecutar:
     if file_anexo is None:
         st.warning("⚠️ Por favor sube el Anexo del día para realizar la auditoría.")
     else:
-        with st.spinner("Procesando auditoría y validando cruces de Jamundí..."):
+        with st.spinner("Procesando auditoría limpia de Jamundí..."):
             m_str, fig_pie, fig_bar, df_nuevos, df_saldados, df_pendientes, df_omitidos = procesar_archivos(file_hist, file_anexo)
             
         st.markdown("---")
