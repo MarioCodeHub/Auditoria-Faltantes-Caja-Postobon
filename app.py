@@ -101,7 +101,9 @@ def cargar_historico_csv(file_obj):
         df['Fecha_DT'] = df[col_fecha].apply(convertir_a_fecha) if col_fecha else pd.NaT
         df['Fecha_UI'] = df['Fecha_DT'].apply(formatear_fecha_ui)
         
-        return df[(df['Saldo_Num'] > 0) & (df['Deudor_SAP_OK'] != '')].copy()
+        # FILTRO ESTRICTO: Solo registros válidos con saldo y fecha real del mes actual en adelante (Octubre 2026)
+        df = df[(df['Saldo_Num'] > 0) & (df['Deudor_SAP_OK'] != '') & (df['Fecha_DT'].notna())].copy()
+        return df[df['Fecha_DT'].dt.year >= 2026].copy()
     except Exception as e:
         return pd.DataFrame()
 
@@ -153,7 +155,7 @@ def cargar_anexo_excel(file_obj):
         df['Fecha_DT'] = df[col_fecha].apply(convertir_a_fecha) if col_fecha else pd.NaT
         df['Fecha_UI'] = df['Fecha_DT'].apply(formatear_fecha_ui)
         
-        return df[df['Valor_Faltante_Num'] > 0].copy()
+        return df[(df['Valor_Faltante_Num'] > 0) & (df['Fecha_DT'].notna())].copy()
     except Exception as e:
         return pd.DataFrame()
 
@@ -181,18 +183,20 @@ def procesar_archivos(file_hist, file_anexo):
     pendientes = df_anexo.drop(nuevos.index).copy()
     saldados = pd.DataFrame(columns=df_anexo.columns)
     
-    # DETECCIÓN BLINDADA DE OMITIDOS: Cruza TODO el histórico con saldo pendiente con lo que hay hoy en el anexo
+    # OMITIDOS ESTRICTOS: Solo del mes actual (Octubre 2026) o periodo reciente que estaban pendientes y faltan hoy
     omitidos = pd.DataFrame()
     if not df_hist.empty:
-        # Tomar todos los registros del histórico que tengan saldo pendiente
-        pendientes_hist = df_hist[df_hist['Saldo_Num'] > 0].copy()
+        pendientes_hist = df_hist[
+            (df_hist['Saldo_Num'] > 0) & 
+            (df_hist['Fecha_DT'].dt.month == mes_actual) & 
+            (df_hist['Fecha_DT'].dt.year == anio_actual)
+        ].copy()
         
         montos_presentes_hoy = set(df_anexo['Valor_Faltante_Num'].round(2))
         
         omitidos_list = []
         for _, row in pendientes_hist.iterrows():
             monto_hist = round(row['Valor_Faltante_Num'], 2)
-            # Si el monto pendiente del histórico NO aparece en el anexo de hoy -> ¡Omitido / Negligencia del cajero!
             if monto_hist not in montos_presentes_hoy:
                 omitidos_list.append(row)
                 
@@ -273,7 +277,7 @@ if ejecutar:
     if file_anexo is None:
         st.warning("⚠️ Por favor sube el Anexo del día para realizar la auditoría.")
     else:
-        with st.spinner("Procesando auditoría y detectando omisiones..."):
+        with st.spinner("Procesando auditoría limpia y sin ruido..."):
             m_str, fig_pie, fig_bar, df_nuevos, df_saldados, df_pendientes, df_omitidos = procesar_archivos(file_hist, file_anexo)
             
         st.markdown("---")
@@ -299,7 +303,7 @@ if ejecutar:
             if df_omitidos.empty:
                 st.info("No hay registros omitidos detectados en el periodo actual.")
             else:
-                st.markdown("### ⚠️ Atención: Estos faltantes estaban en el histórico con saldo pendiente, pero fueron omitidos en el anexo de hoy.")
+                st.markdown("### ⚠️ Atención: Estos faltantes del mes actual estaban en el histórico con saldo pendiente, pero fueron omitidos en el anexo de hoy.")
                 st.dataframe(df_omitidos, use_container_width=True)
 else:
     st.info("💡 Sube el **Histórico Maestro (.csv)** y el **Anexo del día**, luego presiona **EJECUTAR AUDITORÍA**.")
