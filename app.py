@@ -158,7 +158,7 @@ def cargar_anexo_excel(file_obj):
         return pd.DataFrame()
 
 
-# --- MOTOR DE AUDITORÍA Y CLASIFICACIÓN ---
+# --- MOTOR DE AUDITORÍA Y CLASIFICACIÓN PERFECTO ---
 def procesar_archivos(file_hist, file_anexo):
     if file_anexo is None:
         return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -176,7 +176,7 @@ def procesar_archivos(file_hist, file_anexo):
     else:
         mes_actual, anio_actual = 10, 2026
         
-    # 1. Saldados (Saldo == 0)
+    # 1. Saldados (Saldo == 0 en el anexo de hoy)
     saldados = df_anexo[df_anexo['Saldo_Num'] == 0].copy()
     
     # 2. Con saldo pendiente en el anexo de hoy
@@ -186,17 +186,13 @@ def procesar_archivos(file_hist, file_anexo):
     es_mes_actual = (con_saldo_anexo['Fecha_DT'].dt.month == mes_actual) & (con_saldo_anexo['Fecha_DT'].dt.year == anio_actual)
     nuevos = con_saldo_anexo[es_mes_actual].copy()
     
-    # Pendientes Activos (Meses anteriores que siguen vigentes en el anexo de hoy)
+    # Pendientes Activos (Meses anteriores que siguen vigentes en el anexo)
     pendientes = con_saldo_anexo.drop(nuevos.index).copy()
     
-    # 3. Omitidos en Anexo (Estrictamente del mes actual que estaban en el histórico con saldo y faltan hoy)
+    # 3. Omitidos en Anexo (TODO el histórico con saldo pendiente que no aparece por ningún lado hoy, ej. septiembre o octubre)
     omitidos = pd.DataFrame()
     if not df_hist.empty:
-        pendientes_hist = df_hist[
-            (df_hist['Saldo_Num'] > 0) & 
-            (df_hist['Fecha_DT'].dt.month == mes_actual) & 
-            (df_hist['Fecha_DT'].dt.year == anio_actual)
-        ].copy()
+        pendientes_hist = df_hist[df_hist['Saldo_Num'] > 0].copy()
         
         montos_presentes_hoy = set(df_anexo['Valor_Faltante_Num'].round(2))
         
@@ -283,7 +279,7 @@ if ejecutar:
     if file_anexo is None:
         st.warning("⚠️ Por favor sube el Anexo del día para realizar la auditoría.")
     else:
-        with st.spinner("Procesando auditoría de Jamundí..."):
+        with st.spinner("Procesando auditoría completa..."):
             m_str, fig_pie, fig_bar, df_nuevos, df_saldados, df_pendientes, df_omitidos = procesar_archivos(file_hist, file_anexo)
             
         st.markdown("---")
@@ -309,7 +305,7 @@ if ejecutar:
             if df_omitidos.empty:
                 st.info("No hay registros omitidos detectados en el periodo actual.")
             else:
-                st.markdown("### ⚠️ Atención: Estos faltantes del mes actual estaban en el histórico con saldo pendiente, pero fueron omitidos en el anexo de hoy.")
+                st.markdown("### ⚠️ Atención: Estos faltantes estaban en el histórico con saldo pendiente, pero fueron omitidos en el anexo de hoy.")
                 st.dataframe(df_omitidos, use_container_width=True)
 else:
     st.info("💡 Sube el **Histórico Maestro (.csv)** y el **Anexo del día**, luego presiona **EJECUTAR AUDITORÍA**.")
