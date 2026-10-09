@@ -101,9 +101,7 @@ def cargar_historico_csv(file_obj):
         df['Fecha_DT'] = df[col_fecha].apply(convertir_a_fecha) if col_fecha else pd.NaT
         df['Fecha_UI'] = df['Fecha_DT'].apply(formatear_fecha_ui)
         
-        # FILTRO ESTRICTO: Solo registros válidos con saldo y fecha real del mes actual en adelante (Octubre 2026)
-        df = df[(df['Saldo_Num'] > 0) & (df['Deudor_SAP_OK'] != '') & (df['Fecha_DT'].notna())].copy()
-        return df[df['Fecha_DT'].dt.year >= 2026].copy()
+        return df[(df['Saldo_Num'] > 0) & (df['Deudor_SAP_OK'] != '') & (df['Fecha_DT'].notna())].copy()
     except Exception as e:
         return pd.DataFrame()
 
@@ -141,7 +139,7 @@ def cargar_anexo_excel(file_obj):
         
         df['Valor_Faltante_Num'] = df[col_valor].apply(limpiar_monto) if col_valor else 0.0
         df['Abonos_Num'] = df[col_abono].apply(limpiar_monto) if col_abono else 0.0
-        df['Saldo_Num'] = df[col_saldo].apply(limpiar_monto) if col_saldo else df['Valor_Faltante_Num']
+        df['Saldo_Num'] = df[col_saldo].apply(limpiar_monto) if col_saldo else (df['Valor_Faltante_Num'] - df['Abonos_Num'])
         
         nombres_finales, saps_finales = [], []
         for _, row in df.iterrows():
@@ -160,7 +158,7 @@ def cargar_anexo_excel(file_obj):
         return pd.DataFrame()
 
 
-# --- MOTOR DE AUDITORÍA Y CLASIFICACIÓN BLINDADO ---
+# --- MOTOR DE AUDITORÍA Y CLASIFICACIÓN PERFECTO ---
 def procesar_archivos(file_hist, file_anexo):
     if file_anexo is None:
         return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -178,12 +176,20 @@ def procesar_archivos(file_hist, file_anexo):
     else:
         mes_actual, anio_actual = 10, 2026
         
-    es_mes_actual = (df_anexo['Fecha_DT'].dt.month == mes_actual) & (df_anexo['Fecha_DT'].dt.year == anio_actual)
-    nuevos = df_anexo[es_mes_actual].copy()
-    pendientes = df_anexo.drop(nuevos.index).copy()
-    saldados = pd.DataFrame(columns=df_anexo.columns)
+    # 1. Saldados (Saldo == 0 en el anexo de hoy)
+    saldados = df_anexo[df_anexo['Saldo_Num'] == 0].copy()
     
-    # OMITIDOS ESTRICTOS: Solo del mes actual (Octubre 2026) o periodo reciente que estaban pendientes y faltan hoy
+    # 2. Con saldo pendiente en el anexo de hoy
+    con_saldo_anexo = df_anexo[df_anexo['Saldo_Num'] > 0].copy()
+    
+    # Nuevos Faltantes (Mes actual en curso: Octubre 2026)
+    es_mes_actual = (con_saldo_anexo['Fecha_DT'].dt.month == mes_actual) & (con_saldo_anexo['Fecha_DT'].dt.year == anio_actual)
+    nuevos = con_saldo_anexo[es_mes_actual].copy()
+    
+    # Pendientes Activos (Meses anteriores que siguen vigentes en el anexo)
+    pendientes = con_saldo_anexo.drop(nuevos.index).copy()
+    
+    # 3. Omitidos en Anexo (Estrictamente del mes actual que estaban en el histórico con saldo y faltan hoy)
     omitidos = pd.DataFrame()
     if not df_hist.empty:
         pendientes_hist = df_hist[
@@ -197,7 +203,7 @@ def procesar_archivos(file_hist, file_anexo):
         omitidos_list = []
         for _, row in pendientes_hist.iterrows():
             monto_hist = round(row['Valor_Faltante_Num'], 2)
-            if monto_hist not in montos_presentes_hoy:
+            if monto_hist not in montos_presentes_hoy and row['Saldo_Num'] > 0:
                 omitidos_list.append(row)
                 
         if omitidos_list:
@@ -206,7 +212,7 @@ def procesar_archivos(file_hist, file_anexo):
     def preparar_df_ui(df_in):
         if df_in.empty:
             return pd.DataFrame(columns=['Nombre Deudor / Transportador', 'SAP', 'Fecha (DD/MM/AAAA)', 'Valor Faltante ($)', 'Abonos ($)', 'Saldo Pendiente ($)'])
-        out = df_in[['Nombre_Deudor_OK', 'Deudor_SAP_OK', 'Fecha_UI', 'Valor_Faltante_Num', 'Abonos_Num', 'Saldo_Num']].copy() if 'Saldo_Num' in df_in.columns else df_in[['Nombre_Deudor_OK', 'Deudor_SAP_OK', 'Fecha_UI', 'Valor_Faltante_Num', 'Valor_Faltante_Num', 'Valor_Faltante_Num']].copy()
+        out = df_in[['Nombre_Deudor_OK', 'Deudor_SAP_OK', 'Fecha_UI', 'Valor_Faltante_Num', 'Abonos_Num', 'Saldo_Num']].copy()
         out.columns = ['Nombre Deudor / Transportador', 'SAP', 'Fecha (DD/MM/AAAA)', 'Valor Faltante ($)', 'Abonos ($)', 'Saldo Pendiente ($)']
         out['Valor Faltante ($)'] = out['Valor Faltante ($)'].apply(lambda x: f"${int(round(limpiar_monto(x))):,}")
         out['Abonos ($)'] = out['Abonos ($)'].apply(lambda x: f"${int(round(limpiar_monto(x))):,}")
@@ -218,9 +224,9 @@ def procesar_archivos(file_hist, file_anexo):
     df_pendientes_ui = preparar_df_ui(pendientes)
     df_omitidos_ui = preparar_df_ui(omitidos)
     
-    tot_nuevos = nuevos['Valor_Faltante_Num'].sum() if not nuevos.empty else 0
-    tot_saldados = 0
-    tot_pendientes = pendientes['Saldo_Num'].sum() if not pendientes.empty and 'Saldo_Num' in pendientes.columns else 0
+    tot_nuevos = nuevos['Saldo_Num'].sum() if not nuevos.empty else 0
+    tot_saldados = saldados['Abonos_Num'].sum() if not saldados.empty else 0
+    tot_pendientes = pendientes['Saldo_Num'].sum() if not pendientes.empty else 0
     tot_omitidos = omitidos['Saldo_Num'].sum() if not omitidos.empty else 0
     
     m_str = f"## 🥤 **AUDITORÍA DE FALTANTES - POSTOBÓN**\n\n"
@@ -277,7 +283,7 @@ if ejecutar:
     if file_anexo is None:
         st.warning("⚠️ Por favor sube el Anexo del día para realizar la auditoría.")
     else:
-        with st.spinner("Procesando auditoría limpia y sin ruido..."):
+        with st.spinner("Procesando auditoría limpia y exacta..."):
             m_str, fig_pie, fig_bar, df_nuevos, df_saldados, df_pendientes, df_omitidos = procesar_archivos(file_hist, file_anexo)
             
         st.markdown("---")
