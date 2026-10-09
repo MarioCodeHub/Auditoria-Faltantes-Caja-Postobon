@@ -52,7 +52,7 @@ def formatear_fecha_ui(val_dt):
     return val_dt.strftime('%d/%m/%Y')
 
 
-# --- CARGA Y PROCESAMIENTO DEL ARCHIVO ---
+# --- CARGA Y PROCESAMIENTO ROBUSTO ---
 def cargar_y_limpiar(file_obj):
     if file_obj is None: return pd.DataFrame()
     filename = file_obj.name
@@ -78,11 +78,11 @@ def cargar_y_limpiar(file_obj):
     header_idx = None
     for idx, row in df_raw.iterrows():
         row_str = [str(c).upper().replace('\n', ' ').strip() for c in row if pd.notna(c)]
-        if any("VALOR DEL FALTANTE" in c or "VALOR" in c for c in row_str) and any("SALDO" in c for c in row_str):
+        if any("VALOR" in c for c in row_str) and any("SALDO" in c for c in row_str):
             header_idx = idx
             break
             
-    if header_idx is None: header_idx = 5
+    if header_idx is None: header_idx = 0
     
     df = df_raw.iloc[header_idx + 1:].copy()
     headers = [str(c).upper().replace('\n', ' ').strip() if pd.notna(c) else f"COL_{i}" for i, c in enumerate(df_raw.iloc[header_idx].values)]
@@ -91,12 +91,21 @@ def cargar_y_limpiar(file_obj):
     df = df.loc[:, df.columns.notna()].copy()
     df = df.loc[:, ~df.columns.duplicated(keep='first')].copy()
     
+    # Búsqueda flexible de columnas
     col_client_code = next((c for c in df.columns if 'CODIGO' in c and 'CLIENTE' in c), None)
+    if not col_client_code: col_client_code = next((c for c in df.columns if 'CLIENTE' in c), None)
+    
     col_client_name = next((c for c in df.columns if 'NOMBRE' in c and 'CLIENTE' in c), None)
-    col_trans_code = next((c for c in df.columns if 'CODIGO' in c and 'TRANSPORTADOR' in c), None)
-    col_trans_name = next((c for c in df.columns if 'NOMBRE' in c and 'TRANSPORTADOR' in c), None)
-    col_fecha = next((c for c in df.columns if 'FECHA' in c), None)
-    col_valor = next((c for c in df.columns if 'VALOR' in c and 'FALTANTE' in c), None)
+    
+    col_trans_code = next((c for c in df.columns if 'TRANSPORTADOR' in c and ('CODIGO' in c or 'ZONA' in c)), None)
+    col_trans_name = next((c for c in df.columns if 'TRANSPORTADOR' in c and 'NOMBRE' in c), None)
+    
+    col_fecha = next((c for c in df.columns if 'FECHA' in c and ('GENER' in c or 'TR' in c or 'DOC' in c or 'FALT' in c)), None)
+    if not col_fecha: col_fecha = next((c for c in df.columns if 'FECHA' in c), None)
+    
+    col_valor = next((c for c in df.columns if 'VALOR' in c and ('FALT' in c or 'ORIG' in c)), None)
+    if not col_valor: col_valor = next((c for c in df.columns if 'VALOR' in c), None)
+    
     col_abono = next((c for c in df.columns if 'ABONO' in c), None)
     col_saldo = next((c for c in df.columns if 'SALDO' in c), None)
     
@@ -157,24 +166,24 @@ def procesar_archivos(file_hist, file_anexo):
     nuevos = con_saldo[es_mes_actual].copy()
     pendientes = con_saldo.drop(nuevos.index).copy()
     
-    # CRUCE INTELIGENTE PARA DETECTAR OMITIDOS
+    # CRUCE INTELIGENTE Y FLEXIBLE PARA OMITIDOS
     omitidos = pd.DataFrame()
     if not df_hist.empty:
-        # Buscamos qué registros tenían saldo pendiente en el histórico
+        # Filtramos los que tenían saldo en el histórico
         pendientes_hist = df_hist[df_hist['Saldo_Num'] > 0].copy()
         
-        # Claves únicas basadas en SAP, Valor y Fecha del anexo actual para ver quiénes sí están
-        claves_anexo_actual = set(zip(con_saldo['Deudor_SAP_OK'], con_saldo['Valor_Faltante_Num'], con_saldo['Fecha_DT']))
+        # Creamos conjuntos de identificación flexibles usando SAP y Monto exacto
+        claves_anexo_actual = set(zip(con_saldo['Deudor_SAP_OK'].astype(str), con_saldo['Valor_Faltante_Num'].round(2)))
         
         omitidos_list = []
         for _, row in pendientes_hist.iterrows():
-            clave_hist = (row['Deudor_SAP_OK'], row['Valor_Faltante_Num'], row['Fecha_DT'])
-            # Si el registro estaba vivo en el histórico, pero NO aparece por ningún lado en el anexo de hoy -> ¡Fue omitido!
+            clave_hist = (str(row['Deudor_SAP_OK']), round(row['Valor_Faltante_Num'], 2))
+            # Si el registro estaba en el histórico pero NO aparece en el anexo de hoy, ¡cayó en omisión!
             if clave_hist not in claves_anexo_actual and row['Saldo_Num'] > 0:
                 omitidos_list.append(row)
                 
         if omitidos_list:
-            omitidos = pd.DataFrame(omitidos_list).drop_duplicates(subset=['Deudor_SAP_OK', 'Valor_Faltante_Num', 'Fecha_DT'])
+            omitidos = pd.DataFrame(omitidos_list).drop_duplicates(subset=['Deudor_SAP_OK', 'Valor_Faltante_Num'])
             
     def preparar_df_ui(df_in):
         if df_in.empty:
@@ -274,9 +283,9 @@ if ejecutar:
             st.dataframe(df_pendientes, use_container_width=True)
         with tab4:
             if df_omitidos.empty:
-                st.info("No hay registros omitidos detectados o no se cargó el archivo de histórico maestro.")
+                st.info("No hay registros omitidos detectados o no se cargó el archivo de histórico maestro correctamente.")
             else:
-                st.markdown("### ⚠️ Atención: Estos faltantes estaban en el histórico con saldo pendiente, pero **desaparecieron** del anexo de hoy. Aquí está el caso del Grupo Surtipanes u otros omitidos por el cajero.")
+                st.markdown("### ⚠️ Atención: Estos faltantes estaban en el histórico con saldo pendiente, pero **desaparecieron** del anexo de hoy. ¡Aquí aparece el caso del Grupo Surtipanes u otras omisiones del cajero!")
                 st.dataframe(df_omitidos, use_container_width=True)
 else:
     st.info("💡 Sube el **Histórico Maestro** y el **Anexo del día**, luego presiona **EJECUTAR AUDITORÍA**.")
