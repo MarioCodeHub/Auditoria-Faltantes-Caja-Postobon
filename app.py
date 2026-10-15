@@ -87,7 +87,7 @@ def cargar_historico_csv(file_obj):
         df = df.loc[:, ~df.columns.duplicated(keep='first')].copy()
         
         col_sap = next((c for c in df.columns if 'CLIENTE' in c or 'SAP' in c or 'DUEDOR' in c), df.columns[2] if len(df.columns) > 2 else None)
-        col_nombre = next((c for c in df.columns if 'NOMBRE DEL CLIENTE' in c or 'CLIENTE' in c), df.columns[3] if len(df.columns) > 3 else None)
+        col_nombre = next((c for c in df.columns if 'NOMBRE' in c or 'TITULAR' in c), df.columns[3] if len(df.columns) > 3 else None)
         col_fecha = next((c for c in df.columns if 'FECHA' in c), df.columns[4] if len(df.columns) > 4 else None)
         col_valor = next((c for c in df.columns if 'VALOR' in c or 'IMPORTE' in c), df.columns[7] if len(df.columns) > 7 else None)
         col_abono = next((c for c in df.columns if 'ABONO' in c), df.columns[8] if len(df.columns) > 8 else None)
@@ -95,20 +95,7 @@ def cargar_historico_csv(file_obj):
         col_motivo = next((c for c in df.columns if 'MOTIVO' in c), df.columns[12] if len(df.columns) > 12 else None)
         
         df['Deudor_SAP_OK'] = df[col_sap].apply(normalizar_sap) if col_sap else '1'
-        
-        # Extracción inteligente del nombre real (evitando que coja "POSTOBON JAMUNDI" si hay otra columna de cliente)
-        nombres_limpios = []
-        for _, row in df.iterrows():
-            nombre_raw = ""
-            if col_nombre and pd.notna(row[col_nombre]):
-                nombre_raw = str(row[col_nombre]).strip()
-            # Si el nombre dice el nombre de la planta, intentemos buscar en la columna de al lado o transportador si existe
-            if not nombre_raw or "POSTOBON" in nombre_raw.upper():
-                if len(row) > 11 and pd.notna(row[11]) and str(row[11]).strip():
-                    nombre_raw = str(row[11]).strip()
-            nombres_limpios.append(remover_tildes_y_raros(nombre_raw) if nombre_raw else 'CLIENTE')
-
-        df['Nombre_Deudor_OK'] = nombres_limpios
+        df['Nombre_Deudor_OK'] = df[col_nombre].apply(remover_tildes_y_raros) if col_nombre else 'CLIENTE'
         df['Valor_Faltante_Num'] = df[col_valor].apply(limpiar_monto) if col_valor else 0.0
         df['Abonos_Num'] = df[col_abono].apply(limpiar_monto) if col_abono else 0.0
         df['Saldo_Num'] = df[col_saldo].apply(limpiar_monto) if col_saldo else (df['Valor_Faltante_Num'] - df['Abonos_Num'])
