@@ -101,7 +101,6 @@ def cargar_historico_csv(file_obj):
         df['Fecha_DT'] = df[col_fecha].apply(convertir_a_fecha) if col_fecha else pd.NaT
         df['Fecha_UI'] = df['Fecha_DT'].apply(formatear_fecha_ui)
         
-        df['__ORIGINAL_ROW__'] = data_rows[:len(df)]
         return df[(df['Saldo_Num'] > 0) & (df['Deudor_SAP_OK'] != '') & (df['Fecha_DT'].notna()) & (df['Fecha_DT'].dt.year >= 2026)].copy()
     except Exception as e:
         return pd.DataFrame()
@@ -137,6 +136,7 @@ def cargar_anexo_excel(file_obj):
         col_valor = next((c for c in df.columns if 'VALOR' in c or 'IMPORTE' in c), None)
         col_abono = next((c for c in df.columns if 'ABONO' in c), None)
         col_saldo = next((c for c in df.columns if 'SALDO' in c), None)
+        col_motivo = next((c for c in df.columns if 'MOTIVO' in c), None)
         
         df['Valor_Faltante_Num'] = df[col_valor].apply(limpiar_monto) if col_valor else 0.0
         df['Abonos_Num'] = df[col_abono].apply(limpiar_monto) if col_abono else 0.0
@@ -145,24 +145,27 @@ def cargar_anexo_excel(file_obj):
         fechas_temp = df[col_fecha].apply(convertir_a_fecha) if col_fecha else pd.Series([pd.NaT]*len(df))
         fecha_predominante = fechas_temp.dropna().max() if not fechas_temp.dropna().empty else (pd.Timestamp.today() - pd.Timedelta(days=1))
         
-        nombres_finales, saps_finales, fechas_dt = [], [], []
+        nombres_finales, saps_finales, fechas_dt, motivos_finales = [], [], [], []
         
         for _, row in df.iterrows():
             c_name = remover_tildes_y_raros(row[col_client_name]) if col_client_name and pd.notna(row[col_client_name]) else ''
             c_code = normalizar_sap(row[col_trans_code]) if col_trans_code and pd.notna(row[col_trans_code]) else '1'
+            motivo = str(row[col_motivo]).strip() if col_motivo and pd.notna(row[col_motivo]) else ''
             
             f_val = convertir_a_fecha(row[col_fecha]) if col_fecha and pd.notna(row[col_fecha]) else pd.NaT
             if pd.isna(f_val):
-                f_val = fecha_predominante
+                f_val = fecha_predominante # Hereda la fecha del corte evaluado si el cajero la dejó vacía
                 
             nombres_finales.append(c_name if c_name else 'CLIENTE')
             saps_finales.append(c_code)
             fechas_dt.append(f_val)
+            motivos_finales.append(motivo)
             
         df['Nombre_Deudor_OK'] = nombres_finales
         df['Deudor_SAP_OK'] = saps_finales
         df['Fecha_DT'] = fechas_dt
         df['Fecha_UI'] = df['Fecha_DT'].apply(formatear_fecha_ui)
+        df['Motivo_OK'] = motivos_finales
         
         return df[df['Valor_Faltante_Num'] > 0].copy()
     except Exception as e:
@@ -205,27 +208,25 @@ def procesar_archivos(file_hist, file_anexo):
         if omitidos_list:
             omitidos = pd.DataFrame(omitidos_list).drop_duplicates(subset=['Deudor_SAP_OK', 'Valor_Faltante_Num'])
             
-    # Mostrar DataFrame completo original o con todas las columnas útiles para copiar/pegar
-    def preparar_df_completo(df_in):
+    # TABLAS LIMPIAS Y PROFESIONALES PARA COPIAR Y PEGAR
+    def preparar_df_limpio(df_in):
         if df_in.empty:
-            return pd.DataFrame(columns=['Nombre Deudor', 'SAP', 'Fecha', 'Valor Faltante', 'Abonos', 'Saldo Pendiente'])
+            return pd.DataFrame(columns=['Nombre Deudor', 'SAP', 'Fecha', 'Valor Faltante ($)', 'Abonos ($)', 'Saldo Pendiente ($)', 'Motivo'])
         
-        # Si viene del anexo de excel, conservamos sus columnas originales completas + nuestras limpias
-        copia = df_in.copy()
-        # Formatear montos visualmente pero manteniendo legibilidad
-        if 'Valor_Faltante_Num' in copia.columns:
-            copia['Valor Faltante ($)'] = copia['Valor_Faltante_Num'].apply(lambda x: f"${int(round(x)):,}")
-        if 'Abonos_Num' in copia.columns:
-            copia['Abonos ($)'] = copia['Abonos_Num'].apply(lambda x: f"${int(round(x)):,}")
-        if 'Saldo_Num' in copia.columns:
-            copia['Saldo Pendiente ($)'] = copia['Saldo_Num'].apply(lambda x: f"${int(round(x)):,}")
-            
-        return copia
+        out = pd.DataFrame()
+        out['Nombre Deudor'] = df_in['Nombre_Deudor_OK']
+        out['SAP'] = df_in['Deudor_SAP_OK']
+        out['Fecha'] = df_in['Fecha_UI']
+        out['Valor Faltante ($)'] = df_in['Valor_Faltante_Num'].apply(lambda x: f"${int(round(x)):,}")
+        out['Abonos ($)'] = df_in['Abonos_Num'].apply(lambda x: f"${int(round(x)):,}")
+        out['Saldo Pendiente ($)'] = df_in['Saldo_Num'].apply(lambda x: f"${int(round(x)):,}")
+        out['Motivo'] = df_in['Motivo_OK'] if 'Motivo_OK' in df_in.columns else ''
+        return out
         
-    df_nuevos_ui = preparar_df_completo(nuevos)
-    df_saldados_ui = preparar_df_completo(saldados)
-    df_pendientes_ui = preparar_df_completo(pendientes)
-    df_omitidos_ui = preparar_df_completo(omitidos)
+    df_nuevos_ui = preparar_df_limpio(nuevos)
+    df_saldados_ui = preparar_df_limpio(saldados)
+    df_pendientes_ui = preparar_df_limpio(pendientes)
+    df_omitidos_ui = preparar_df_limpio(omitidos)
     
     tot_nuevos = nuevos['Saldo_Num'].sum() if not nuevos.empty else 0
     tot_saldados = saldados['Abonos_Num'].sum() if not saldados.empty else 0
@@ -298,7 +299,7 @@ if ejecutar:
         with gcol2:
             st.plotly_chart(fig_bar, use_container_width=True)
             
-        st.markdown("## 📄 **Detalle Completo de Registros (Listos para Copiar y Pegar)**")
+        st.markdown("## 📄 **Detalle de Registros (Listos para Copiar y Pegar)**")
         
         tab1, tab2, tab3, tab4 = st.tabs(["🔴 Nuevos Faltantes", "🟢 Faltantes Saldados / Pagados", "🟣 Pendientes Activos", "⚠️ Omitidos en Anexo"])
         
