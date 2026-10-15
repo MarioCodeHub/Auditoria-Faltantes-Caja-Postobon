@@ -87,7 +87,7 @@ def cargar_historico_csv(file_obj):
         df = df.loc[:, ~df.columns.duplicated(keep='first')].copy()
         
         col_sap = next((c for c in df.columns if 'CLIENTE' in c or 'SAP' in c or 'DUEDOR' in c), df.columns[2] if len(df.columns) > 2 else None)
-        col_nombre = next((c for c in df.columns if 'NOMBRE' in c or 'TITULAR' in c), df.columns[3] if len(df.columns) > 3 else None)
+        col_nombre = next((c for c in df.columns if 'NOMBRE DEL CLIENTE' in c or 'CLIENTE' in c), df.columns[3] if len(df.columns) > 3 else None)
         col_fecha = next((c for c in df.columns if 'FECHA' in c), df.columns[4] if len(df.columns) > 4 else None)
         col_valor = next((c for c in df.columns if 'VALOR' in c or 'IMPORTE' in c), df.columns[7] if len(df.columns) > 7 else None)
         col_abono = next((c for c in df.columns if 'ABONO' in c), df.columns[8] if len(df.columns) > 8 else None)
@@ -95,7 +95,23 @@ def cargar_historico_csv(file_obj):
         col_motivo = next((c for c in df.columns if 'MOTIVO' in c), df.columns[12] if len(df.columns) > 12 else None)
         
         df['Deudor_SAP_OK'] = df[col_sap].apply(normalizar_sap) if col_sap else '1'
-        df['Nombre_Deudor_OK'] = df[col_nombre].apply(remover_tildes_y_raros) if col_nombre else 'CLIENTE'
+        
+        # Búsqueda inteligente para evitar que el nombre sea siempre "POSTOBON JAMUNDI"
+        nombres_limpios = []
+        for _, row in enumerate(data_rows):
+            nombre_raw = ""
+            # Buscar en columnas traseras si la columna 3 es el nombre de la planta
+            for idx_col in [11, 3, 1]:
+                if len(row) > idx_col and pd.notna(row[idx_col]):
+                    val_c = str(row[idx_col]).strip()
+                    if val_c and "POSTOBON" not in val_c.upper() and len(val_c) > 2:
+                        nombre_raw = val_c
+                        break
+            if not nombre_raw and len(row) > 3:
+                nombre_raw = str(row[3]).strip()
+            nombres_limpios.append(remover_tildes_y_raros(nombre_raw) if nombre_raw else 'CLIENTE')
+
+        df['Nombre_Deudor_OK'] = nombres_limpios
         df['Valor_Faltante_Num'] = df[col_valor].apply(limpiar_monto) if col_valor else 0.0
         df['Abonos_Num'] = df[col_abono].apply(limpiar_monto) if col_abono else 0.0
         df['Saldo_Num'] = df[col_saldo].apply(limpiar_monto) if col_saldo else (df['Valor_Faltante_Num'] - df['Abonos_Num'])
