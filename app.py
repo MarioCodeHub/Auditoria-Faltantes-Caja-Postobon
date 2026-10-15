@@ -92,6 +92,7 @@ def cargar_historico_csv(file_obj):
         col_valor = next((c for c in df.columns if 'VALOR' in c or 'IMPORTE' in c), df.columns[7] if len(df.columns) > 7 else None)
         col_abono = next((c for c in df.columns if 'ABONO' in c), df.columns[8] if len(df.columns) > 8 else None)
         col_saldo = next((c for c in df.columns if 'SALDO' in c), df.columns[9] if len(df.columns) > 9 else None)
+        col_motivo = next((c for c in df.columns if 'MOTIVO' in c), df.columns[12] if len(df.columns) > 12 else None)
         
         df['Deudor_SAP_OK'] = df[col_sap].apply(normalizar_sap) if col_sap else '1'
         df['Nombre_Deudor_OK'] = df[col_nombre].apply(remover_tildes_y_raros) if col_nombre else 'CLIENTE'
@@ -100,6 +101,7 @@ def cargar_historico_csv(file_obj):
         df['Saldo_Num'] = df[col_saldo].apply(limpiar_monto) if col_saldo else (df['Valor_Faltante_Num'] - df['Abonos_Num'])
         df['Fecha_DT'] = df[col_fecha].apply(convertir_a_fecha) if col_fecha else pd.NaT
         df['Fecha_UI'] = df['Fecha_DT'].apply(formatear_fecha_ui)
+        df['Motivo_OK'] = df[col_motivo].apply(lambda x: str(x).strip()) if col_motivo else ''
         
         return df[(df['Saldo_Num'] > 0) & (df['Deudor_SAP_OK'] != '') & (df['Fecha_DT'].notna()) & (df['Fecha_DT'].dt.year >= 2026)].copy()
     except Exception as e:
@@ -154,7 +156,7 @@ def cargar_anexo_excel(file_obj):
             
             f_val = convertir_a_fecha(row[col_fecha]) if col_fecha and pd.notna(row[col_fecha]) else pd.NaT
             if pd.isna(f_val):
-                f_val = fecha_predominante # Hereda la fecha del corte evaluado si el cajero la dejó vacía
+                f_val = fecha_predominante
                 
             nombres_finales.append(c_name if c_name else 'CLIENTE')
             saps_finales.append(c_code)
@@ -208,7 +210,6 @@ def procesar_archivos(file_hist, file_anexo):
         if omitidos_list:
             omitidos = pd.DataFrame(omitidos_list).drop_duplicates(subset=['Deudor_SAP_OK', 'Valor_Faltante_Num'])
             
-    # TABLAS LIMPIAS Y PROFESIONALES PARA COPIAR Y PEGAR
     def preparar_df_limpio(df_in):
         if df_in.empty:
             return pd.DataFrame(columns=['Nombre Deudor', 'SAP', 'Fecha', 'Valor Faltante ($)', 'Abonos ($)', 'Saldo Pendiente ($)', 'Motivo'])
