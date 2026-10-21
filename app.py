@@ -58,13 +58,13 @@ def formatear_fecha_ui(val_dt):
     return val_dt.strftime('%d/%m/%Y')
 
 
-# --- CARGAR HISTÓRICO MAESTRO (.CSV) ---
+# --- CARGAR HISTÓRICO MAESTRO (.CSV) DINÁMICO ---
 def cargar_historico_csv(file_obj):
     if file_obj is None: return pd.DataFrame()
     try:
-        content = file_obj.getvalue().decode('latin1')
+        content = file_obj.getvalue().decode('latin1', errors='ignore')
         lines = content.splitlines()
-        reader = csv.reader(lines, delimiter=';')
+        reader = list(csv.reader(lines, delimiter=';'))
         rows = [r for r in reader if any(str(cell).strip() for cell in r)]
             
         if not rows: return pd.DataFrame()
@@ -72,31 +72,38 @@ def cargar_historico_csv(file_obj):
         header_idx = -1
         for idx, r in enumerate(rows):
             row_str = " ".join([str(c).upper() for c in r])
-            if "IMPORTE" in row_str or "VALOR" in row_str or "DUEDOR SAP" in row_str or "FECHA" in row_str or "CLIENTE" in row_str:
+            if "VALOR" in row_str or "IMPORTE" in row_str or "FALTANTE" in row_str or "SAP" in row_str or "CLIENTE" in row_str:
                 header_idx = idx
                 break
                 
         if header_idx == -1: header_idx = 0
+        headers = [str(c).upper().replace('\n', ' ').strip() for c in rows[header_idx]]
         data_rows = rows[header_idx + 1:]
         
-        if len(data_rows) > 1000:
-            data_rows = data_rows[-1000:]
+        # Mapeo dinámico de columnas del CSV histórico
+        col_sap = next((i for i, h in enumerate(headers) if 'SAP' in h or 'CODIGO' in h or 'DUEDOR' in h), 2)
+        col_nombre = next((i for i, h in enumerate(headers) if 'NOMBRE' in h or 'CLIENTE' in h or 'TITULAR' in h or 'RESPONSABLE' in h), 3)
+        col_fecha = next((i for i, h in enumerate(headers) if 'FECHA' in h), 4)
+        col_valor = next((i for i, h in enumerate(headers) if 'VALOR' in h or 'IMPORTE' in h or 'FALTANTE' in h), 7)
+        col_abono = next((i for i, h in enumerate(headers) if 'ABONO' in h), 8)
+        col_saldo = next((i for i, h in enumerate(headers) if 'SALDO' in h), 9)
+        col_motivo = next((i for i, h in enumerate(headers) if 'MOTIVO' in h), 11)
         
         registros = []
         for r in data_rows:
-            if len(r) < 5: continue
+            if len(r) <= max(col_sap, col_fecha, col_valor): continue
             
-            sap_raw = r[2] if len(r) > 2 and r[2].replace('.','').isdigit() else (r[3] if len(r) > 3 else "1")
-            titular_raw = r[3] if len(r) > 3 and not r[3].replace('.','').isdigit() else (r[4] if len(r) > 4 else "")
-            fecha_raw = r[4] if len(r) > 4 else (r[3] if len(r) > 3 else "")
-            valor_raw = r[7] if len(r) > 7 else (r[5] if len(r) > 5 else "0")
-            abono_raw = r[8] if len(r) > 8 else (r[6] if len(r) > 6 else "0")
-            saldo_raw = r[9] if len(r) > 9 else (r[7] if len(r) > 7 else "0")
-            motivo_raw = r[11] if len(r) > 11 else (r[8] if len(r) > 8 else "")
+            sap_raw = r[col_sap] if col_sap < len(r) else "1"
+            titular_raw = r[col_nombre] if col_nombre < len(r) else ""
+            fecha_raw = r[col_fecha] if col_fecha < len(r) else ""
+            valor_raw = r[col_valor] if col_valor < len(r) else "0"
+            abono_raw = r[col_abono] if col_abono < len(r) else "0"
+            saldo_raw = r[col_saldo] if col_saldo < len(r) else "0"
+            motivo_raw = r[col_motivo] if col_motivo < len(r) else ""
             
             val_monto = limpiar_monto(valor_raw)
             val_abono = limpiar_monto(abono_raw)
-            val_saldo = limpiar_monto(saldo_raw) if str(saldo_raw).strip() != '-' else (val_monto - val_abono)
+            val_saldo = limpiar_monto(saldo_raw) if str(saldo_raw).strip() not in ['-', ''] else (val_monto - val_abono)
             
             if val_monto <= 0: continue
             f_dt = convertir_a_fecha(fecha_raw)
@@ -193,7 +200,7 @@ def cargar_anexo_excel(file_obj):
         return pd.DataFrame()
 
 
-# --- MOTOR DE AUDITORÍA JAMUNDÍ BLINDADO (LLAVE SAP + FECHA + MONTO) ---
+# --- MOTOR DE AUDITORÍA JAMUNDÍ PERFECTO ---
 def procesar_archivos(file_hist, file_anexo):
     if file_anexo is None:
         return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -207,7 +214,7 @@ def procesar_archivos(file_hist, file_anexo):
     fechas_validas = df_anexo['Fecha_DT'].dropna()
     fecha_dia_actual = fechas_validas.max() if not fechas_validas.empty else pd.Timestamp('2026-10-20')
 
-    # 1. CATALOGAR HISTÓRICO PENDIENTE CON LLAVE INFALIBLE (SAP + FECHA + VALOR FALTANTE)
+    # 1. CATALOGAR HISTÓRICO PENDIENTE (SAP + Fecha + Valor Faltante)
     mapa_hist = {}
     if not df_hist.empty:
         for idx, r in df_hist.iterrows():
@@ -218,7 +225,7 @@ def procesar_archivos(file_hist, file_anexo):
                     mapa_hist[key] = []
                 mapa_hist[key].append(r)
 
-    # 2. CATALOGAR ANEXO DE HOY CON LA MISMA LLAVE
+    # 2. CATALOGAR ANEXO DE HOY
     mapa_anexo = {}
     for idx, r in df_anexo.iterrows():
         f_dt = r['Fecha_DT']
@@ -228,7 +235,7 @@ def procesar_archivos(file_hist, file_anexo):
             mapa_anexo[key] = 0
         mapa_anexo[key] += 1
 
-    # 3. CAZAR OMITIDOS REALES (Estaban en histórico con saldo y NO están en el anexo de hoy)
+    # 3. CAZAR OMITIDOS REALES
     omitidos_list = []
     for key, lista_h in mapa_hist.items():
         cant_hist = len(lista_h)
@@ -397,7 +404,7 @@ if ejecutar:
     if file_anexo is None:
         st.warning("⚠️ Por favor sube el Anexo del día para realizar la auditoría.")
     else:
-        with st.spinner("Procesando auditoría blindada..."):
+        with st.spinner("Procesando auditoría blindada con detección dinámica..."):
             m_str, fig_pie, fig_bar, df_nuevos, df_saldados, df_pendientes, df_omitidos = procesar_archivos(file_hist, file_anexo)
             
         st.markdown("---")
