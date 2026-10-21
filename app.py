@@ -80,7 +80,6 @@ def cargar_historico_csv(file_obj):
         headers = [str(c).upper().replace('\n', ' ').strip() for c in rows[header_idx]]
         data_rows = rows[header_idx + 1:]
         
-        # Mapeo dinámico de columnas del CSV histórico
         col_sap = next((i for i, h in enumerate(headers) if 'SAP' in h or 'CODIGO' in h or 'DUEDOR' in h), 2)
         col_nombre = next((i for i, h in enumerate(headers) if 'NOMBRE' in h or 'CLIENTE' in h or 'TITULAR' in h or 'RESPONSABLE' in h), 3)
         col_fecha = next((i for i, h in enumerate(headers) if 'FECHA' in h), 4)
@@ -200,7 +199,7 @@ def cargar_anexo_excel(file_obj):
         return pd.DataFrame()
 
 
-# --- MOTOR DE AUDITORÍA JAMUNDÍ PERFECTO ---
+# --- MOTOR DE AUDITORÍA JAMUNDÍ BLINDADO ANTI-FANTASMAS ---
 def procesar_archivos(file_hist, file_anexo):
     if file_anexo is None:
         return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -214,28 +213,29 @@ def procesar_archivos(file_hist, file_anexo):
     fechas_validas = df_anexo['Fecha_DT'].dropna()
     fecha_dia_actual = fechas_validas.max() if not fechas_validas.empty else pd.Timestamp('2026-10-20')
 
-    # 1. CATALOGAR HISTÓRICO PENDIENTE (SAP + Fecha + Valor Faltante)
+    # 1. CATALOGAR HISTÓRICO PENDIENTE USANDO LLAVE ÚNICA DE FECHA + MONTO EXACTO (Independiente del nombre genérico)
     mapa_hist = {}
     if not df_hist.empty:
         for idx, r in df_hist.iterrows():
             if r['Saldo_Num'] > 0.0:
                 f_str = r['Fecha_DT'].strftime('%Y-%m-%d') if pd.notna(r['Fecha_DT']) else ''
-                key = (str(r['Deudor_SAP_OK']), f_str, round(r['Valor_Faltante_Num'], 2))
+                # Llave infalible por Fecha y Valor exacto del faltante
+                key = (f_str, round(r['Valor_Faltante_Num'], 2))
                 if key not in mapa_hist:
                     mapa_hist[key] = []
                 mapa_hist[key].append(r)
 
-    # 2. CATALOGAR ANEXO DE HOY
+    # 2. CATALOGAR ANEXO DE HOY CON LA MISMA LLAVE
     mapa_anexo = {}
     for idx, r in df_anexo.iterrows():
         f_dt = r['Fecha_DT']
         f_str = f_dt.strftime('%Y-%m-%d') if pd.notna(f_dt) else ''
-        key = (str(r['Deudor_SAP_OK']), f_str, round(r['Valor_Faltante_Num'], 2))
+        key = (f_str, round(r['Valor_Faltante_Num'], 2))
         if key not in mapa_anexo:
             mapa_anexo[key] = 0
         mapa_anexo[key] += 1
 
-    # 3. CAZAR OMITIDOS REALES
+    # 3. CAZAR OMITIDOS REALES (Los que están en histórico pero NO aparecen en el anexo de hoy)
     omitidos_list = []
     for key, lista_h in mapa_hist.items():
         cant_hist = len(lista_h)
@@ -292,10 +292,9 @@ def procesar_archivos(file_hist, file_anexo):
 
     for row in activos_anexo:
         f_dt = row['Fecha_DT']
-        sap_r = str(row['Deudor_SAP_OK'])
         f_str_r = f_dt.strftime('%Y-%m-%d') if pd.notna(f_dt) else ''
         monto_r = round(row['Valor_Faltante_Num'], 2)
-        key = (sap_r, f_str_r, monto_r)
+        key = (f_str_r, monto_r)
         
         v_inicial = row['Valor_Faltante_Num']
         abono_calc = row['Abonos_Num']
@@ -404,7 +403,7 @@ if ejecutar:
     if file_anexo is None:
         st.warning("⚠️ Por favor sube el Anexo del día para realizar la auditoría.")
     else:
-        with st.spinner("Procesando auditoría blindada con detección dinámica..."):
+        with st.spinner("Procesando auditoría sin duplicados ni fantasmas..."):
             m_str, fig_pie, fig_bar, df_nuevos, df_saldados, df_pendientes, df_omitidos = procesar_archivos(file_hist, file_anexo)
             
         st.markdown("---")
