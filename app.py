@@ -45,6 +45,12 @@ def limpiar_monto(val):
 
 def convertir_a_fecha(val):
     if pd.isna(val): return pd.NaT
+    # Si viene como número de serie de Excel
+    if isinstance(val, (int, float)):
+        try:
+            return pd.to_datetime('1899-12-30') + pd.to_timedelta(val, unit='D')
+        except:
+            pass
     dt = pd.to_datetime(val, dayfirst=True, errors='coerce')
     return dt
 
@@ -160,7 +166,10 @@ def cargar_anexo_excel(file_obj):
                 
             c_code = normalizar_sap(row[col_trans_code]) if col_trans_code and pd.notna(row[col_trans_code]) else '1'
             motivo = str(row[col_motivo]).strip() if col_motivo and pd.notna(row[col_motivo]) else ''
-            f_val = convertir_a_fecha(row[col_fecha]) if col_fecha and pd.notna(row[col_fecha]) else pd.NaT
+            
+            f_val = pd.NaT
+            if col_fecha and pd.notna(row[col_fecha]):
+                f_val = convertir_a_fecha(row[col_fecha])
             
             nombres_finales.append(remover_tildes_y_raros(c_name) if c_name and "POSTOBON" not in c_name.upper() else 'RESPONSABLE / ZONA')
             saps_finales.append(c_code)
@@ -170,15 +179,24 @@ def cargar_anexo_excel(file_obj):
         df['Nombre_Deudor_OK'] = nombres_finales
         df['Deudor_SAP_OK'] = saps_finales
         df['Fecha_DT'] = fechas_dt
-        df['Fecha_UI'] = df['Fecha_DT'].apply(formatear_fecha_ui)
         df['Motivo_OK'] = motivos_finales
         
-        return df[df['Valor_Faltante_Num'] > 0].copy()
+        # Filtrar solo filas con valor válido
+        df = df[df['Valor_Faltante_Num'] > 0].copy()
+        
+        # Si hay fechas válidas, asignamos por defecto la fecha máxima a las filas que tengan fecha NaT
+        fechas_validas_temp = df['Fecha_DT'].dropna()
+        if not fechas_validas_temp.empty:
+            max_f = fechas_validas_temp.max()
+            df['Fecha_DT'] = df['Fecha_DT'].fillna(max_f)
+            
+        df['Fecha_UI'] = df['Fecha_DT'].apply(formatear_fecha_ui)
+        return df
     except Exception as e:
         return pd.DataFrame()
 
 
-# --- MOTOR DE AUDITORÍA CLASIFICACIÓN EXACTA ---
+# --- MOTOR DE AUDITORÍA JAMUNDÍ CON FILTRADO ESTRICTO DE FECHAS ---
 def procesar_archivos(file_hist, file_anexo):
     if file_anexo is None:
         return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -189,7 +207,7 @@ def procesar_archivos(file_hist, file_anexo):
     if df_anexo.empty:
         return "⚠️ El anexo cargado no tiene registros válidos.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
         
-    # ENCONTRAR LA FECHA EXACTA DEL DÍA AUDITADO (La fecha máxima en el archivo del anexo, Ej: 20/10/2026)
+    # DETECTAR LA FECHA DE CORTE MÁS ALTA DEL ANEXO (Ej: 20/10/2026)
     fechas_validas = df_anexo['Fecha_DT'].dropna()
     fecha_dia_actual = fechas_validas.max() if not fechas_validas.empty else pd.Timestamp('2026-10-20')
 
@@ -200,7 +218,6 @@ def procesar_archivos(file_hist, file_anexo):
             key = (str(r['Deudor_SAP_OK']), f_str, str(r['Nombre_Deudor_OK']))
             mapa_hist[key] = r
 
-    # 1. SEPARAR SALDADOS/PAGADOS (Saldo == 0 o Abono == Valor)
     saldados_list = []
     activos_anexo = []
 
@@ -209,7 +226,6 @@ def procesar_archivos(file_hist, file_anexo):
         abono = row['Abonos_Num']
         saldo = row['Saldo_Num']
         
-        # Si ya está saldado/pagado 100% en el anexo
         if saldo <= 0.01 or (abono >= monto and monto > 0):
             row_saldado = row.copy()
             row_saldado['Abonos_Num'] = monto
@@ -220,14 +236,12 @@ def procesar_archivos(file_hist, file_anexo):
 
     saldados = pd.DataFrame(saldados_list) if saldados_list else pd.DataFrame()
 
-    # 2. SEPARAR ESTRICTAMENTE NUEVOS (FECHA == DÍA ACTUAL) VS PENDIENTES ACTIVOS (FECHA < DÍA ACTUAL)
     nuevos_list = []
     pendientes_list = []
 
     for row in activos_anexo:
         f_dt = row['Fecha_DT']
         
-        # Reconstruir si tiene abono de histórico
         sap_r = str(row['Deudor_SAP_OK'])
         f_str_r = f_dt.strftime('%Y-%m-%d') if pd.notna(f_dt) else ''
         nombre_r = str(row['Nombre_Deudor_OK'])
@@ -248,11 +262,15 @@ def procesar_archivos(file_hist, file_anexo):
         row_final['Abonos_Num'] = round(abono_calc, 2)
         row_final['Saldo_Num'] = round(saldo_actual, 2)
 
-        # CRITERIO DEFINITIVO:
-        # Si la fecha del faltante es MENOR que la fecha del día actual -> Va a PENDIENTES ACTIVOS
-        # Si es IGUAL a la fecha del día actual -> Va a NUEVOS FALTANTES
-        if pd.notna(f_dt) and f_dt < fecha_dia_actual:
-            pendientes_list.append(row_final)
+        # COMPARACIÓN ESTRICTA DE NORMALIZACIÓN DE FECHAS (Ignorando horas)
+        if pd.notna(f_dt):
+            f_dt_norm = pd.to_datetime(f_dt.date())
+            f_corte_norm = pd.to_datetime(fecha_dia_actual.date())
+            
+            if f_dt_norm < f_corte_norm:
+                pendientes_list.append(row_final)
+            else:
+                nuevos_list.append(row_final)
         else:
             nuevos_list.append(row_final)
 
@@ -336,7 +354,7 @@ if ejecutar:
     if file_anexo is None:
         st.warning("⚠️ Por favor sube el Anexo del día para realizar la auditoría.")
     else:
-        with st.spinner("Procesando auditoría Jamundí..."):
+        with st.spinner("Procesando auditoría estricta Jamundí..."):
             m_str, fig_pie, fig_bar, df_nuevos, df_saldados, df_pendientes, df_omitidos = procesar_archivos(file_hist, file_anexo)
             
         st.markdown("---")
@@ -362,7 +380,9 @@ if ejecutar:
         with tab3:
             st.dataframe(df_pendientes, use_container_width=True)
         with tab4:
-            st.info("No hay registros omitidos detectados en este corte.")
-            st.dataframe(df_omitidos, use_container_width=True)
+            if df_omitidos.empty:
+                st.info("No hay registros omitidos detectados en este corte.")
+            else:
+                st.dataframe(df_omitidos, use_container_width=True)
 else:
     st.info("💡 Sube el **Histórico Maestro (.csv)** y el **Anexo del día**, luego presiona **EJECUTAR AUDITORÍA**.")
