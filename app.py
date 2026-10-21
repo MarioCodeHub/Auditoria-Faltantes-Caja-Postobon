@@ -193,7 +193,7 @@ def cargar_anexo_excel(file_obj):
         return pd.DataFrame()
 
 
-# --- MOTOR DE AUDITORÍA CON DETECCIÓN DE OMITIDOS ---
+# --- MOTOR DE AUDITORÍA CON CONTROL DE OMITIDOS POR HUELLA ÚNICA ---
 def procesar_archivos(file_hist, file_anexo):
     if file_anexo is None:
         return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -207,38 +207,48 @@ def procesar_archivos(file_hist, file_anexo):
     fechas_validas = df_anexo['Fecha_DT'].dropna()
     fecha_dia_actual = fechas_validas.max() if not fechas_validas.empty else pd.Timestamp('2026-10-20')
 
+    # Crear huella única por cada registro pendiente en el histórico
     mapa_hist = {}
-    claves_hist_todas = set()
+    contador_hist = {}
     if not df_hist.empty:
         for _, r in df_hist.iterrows():
-            f_str = r['Fecha_DT'].strftime('%Y-%m-%d') if pd.notna(r['Fecha_DT']) else ''
-            key = (str(r['Deudor_SAP_OK']), f_str, str(r['Nombre_Deudor_OK']))
-            mapa_hist[key] = r
             if r['Saldo_Num'] > 0.01:
-                claves_hist_todas.add(key)
+                f_str = r['Fecha_DT'].strftime('%Y-%m-%d') if pd.notna(r['Fecha_DT']) else ''
+                # Huella que incluye SAP, Fecha, Nombre y el Saldo exacto para evitar colisiones
+                huella = (str(r['Deudor_SAP_OK']), f_str, str(r['Nombre_Deudor_OK']), round(r['Saldo_Num'], 2))
+                
+                # Manejar duplicados exactos contando ocurrencias
+                contador_hist[huella] = contador_hist.get(huella, 0) + 1
+                mapa_hist[(huella, contador_hist[huella])] = r
 
-    # Claves presentes en el anexo de hoy
+    # Crear huellas de lo que SÍ vino en el anexo de hoy
+    contador_anexo = {}
     claves_anexo_hoy = set()
     for _, r in df_anexo.iterrows():
         f_dt = r['Fecha_DT']
         f_str = f_dt.strftime('%Y-%m-%d') if pd.notna(f_dt) else ''
-        claves_anexo_hoy.add((str(r['Deudor_SAP_OK']), f_str, str(r['Nombre_Deudor_OK'])))
+        saldo_aux = r['Saldo_Num']
+        
+        huella_a = (str(r['Deudor_SAP_OK']), f_str, str(r['Nombre_Deudor_OK']), round(saldo_aux, 2))
+        contador_anexo[huella_a] = contador_anexo.get(huella_a, 0) + 1
+        claves_anexo_hoy.add((huella_a, contador_anexo[huella_a]))
 
-    # 1. DETECTAR OMITIDOS EN ANEXO (Estaban en histórico con saldo pendiente y NO aparecen en el anexo de hoy)
+    # 1. DETECTAR OMITIDOS EN ANEXO CON CONTADOR PRECISO
     omitidos_list = []
-    for key_h in list(claves_hist_todas):
-        if key_h not in claves_anexo_hoy:
-            reg_h = mapa_hist[key_h]
-            omitidos_list.append({
-                'Deudor_SAP_OK': key_h[0],
-                'Nombre_Deudor_OK': key_h[2],
-                'Fecha_DT': reg_h['Fecha_DT'],
-                'Fecha_UI': reg_h['Fecha_UI'],
-                'Valor_Faltante_Num': reg_h['Valor_Faltante_Num'],
-                'Abonos_Num': reg_h['Abonos_Num'],
-                'Saldo_Num': reg_h['Saldo_Num'],
-                'Motivo_OK': reg_h['Motivo_OK']
-            })
+    for huella_h, freq in contador_hist.items():
+        for i in range(1, freq + 1):
+            if ((huella_h, i)) not in claves_anexo_hoy:
+                reg_h = mapa_hist[(huella_h, i)]
+                omitidos_list.append({
+                    'Deudor_SAP_OK': huella_h[0],
+                    'Nombre_Deudor_OK': huella_h[2],
+                    'Fecha_DT': reg_h['Fecha_DT'],
+                    'Fecha_UI': reg_h['Fecha_UI'],
+                    'Valor_Faltante_Num': reg_h['Valor_Faltante_Num'],
+                    'Abonos_Num': reg_h['Abonos_Num'],
+                    'Saldo_Num': reg_h['Saldo_Num'],
+                    'Motivo_OK': reg_h['Motivo_OK']
+                })
     omitidos = pd.DataFrame(omitidos_list) if omitidos_list else pd.DataFrame(columns=df_anexo.columns)
 
     # 2. SEPARAR SALDADOS EN EL ANEXO
@@ -269,17 +279,20 @@ def procesar_archivos(file_hist, file_anexo):
         sap_r = str(row['Deudor_SAP_OK'])
         f_str_r = f_dt.strftime('%Y-%m-%d') if pd.notna(f_dt) else ''
         nombre_r = str(row['Nombre_Deudor_OK'])
-        key_r = (sap_r, f_str_r, nombre_r)
         
         v_inicial = row['Valor_Faltante_Num']
         abono_calc = row['Abonos_Num']
         saldo_actual = row['Saldo_Num']
         
-        if key_r in mapa_hist:
-            v_hist = mapa_hist[key_r]['Valor_Faltante_Num']
-            if v_hist > saldo_actual:
-                v_inicial = v_hist
-                abono_calc = v_hist - saldo_actual
+        # Buscar en mapa hist por coincidencia flexible
+        encontrado_hist = False
+        for (h_sap, h_fstr, h_nom, h_saldo), reg_h in mapa_hist.items():
+            if h_sap == sap_r and h_nom == nombre_r and h_fstr == f_str_r:
+                if reg_h['Valor_Faltante_Num'] > saldo_actual:
+                    v_inicial = reg_h['Valor_Faltante_Num']
+                    abono_calc = v_inicial - saldo_actual
+                encontrado_hist = True
+                break
 
         row_final = row.copy()
         row_final['Valor_Faltante_Num'] = v_inicial
@@ -378,7 +391,7 @@ if ejecutar:
     if file_anexo is None:
         st.warning("⚠️ Por favor sube el Anexo del día para realizar la auditoría.")
     else:
-        with st.spinner("Procesando auditoría y validando trampas..."):
+        with st.spinner("Procesando auditoría y cazando trampas..."):
             m_str, fig_pie, fig_bar, df_nuevos, df_saldados, df_pendientes, df_omitidos = procesar_archivos(file_hist, file_anexo)
             
         st.markdown("---")
