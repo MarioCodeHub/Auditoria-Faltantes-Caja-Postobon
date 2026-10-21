@@ -213,7 +213,6 @@ def procesar_archivos(file_hist, file_anexo):
         for idx, r in df_hist.iterrows():
             if r['Saldo_Num'] > 0.0:  # ¡Incluye hasta los de 13 pesos!
                 f_str = r['Fecha_DT'].strftime('%Y-%m-%d') if pd.notna(r['Fecha_DT']) else ''
-                # Llave maestra única combinando SAP, Fecha exacta y Nombre limpio
                 key = (str(r['Deudor_SAP_OK']), f_str, str(r['Nombre_Deudor_OK']))
                 
                 if key not in mapa_hist:
@@ -237,7 +236,6 @@ def procesar_archivos(file_hist, file_anexo):
         cant_hist = len(lista_h)
         cant_anexo = len(mapa_anexo.get(key, []))
         
-        # Si en el histórico hay más registros que en el anexo de hoy, los faltantes fueron omitidos
         if cant_hist > cant_anexo:
             for reg_h in lista_h[cant_anexo:]:
                 omitidos_list.append({
