@@ -9,7 +9,7 @@ import csv
 
 # Configuración de la página de Streamlit
 st.set_page_config(
-    page_title="Auditoría de Faltantes - Popayán / Jamundí",
+    page_title="Auditoría de Faltantes - Jamundí",
     page_icon="🥤",
     layout="wide"
 )
@@ -119,7 +119,7 @@ def cargar_historico_csv(file_obj):
         return pd.DataFrame()
 
 
-# --- CARGAR ANEXO EXCEL DIARIO ---
+# --- CARGAR ANEXO EXCEL DIARIO (JAMUNDÍ) ---
 def cargar_anexo_excel(file_obj):
     if file_obj is None: return pd.DataFrame()
     try:
@@ -193,7 +193,7 @@ def cargar_anexo_excel(file_obj):
         return pd.DataFrame()
 
 
-# --- MOTOR DE AUDITORÍA BLINDADO CAZA-TRAMPAS ---
+# --- MOTOR DE AUDITORÍA JAMUNDÍ CON CAZA DE TRAMPAS ---
 def procesar_archivos(file_hist, file_anexo):
     if file_anexo is None:
         return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -211,7 +211,7 @@ def procesar_archivos(file_hist, file_anexo):
     mapa_hist = {}
     if not df_hist.empty:
         for idx, r in df_hist.iterrows():
-            if r['Saldo_Num'] > 0.0:  # ¡Incluye hasta los de 13 pesos!
+            if r['Saldo_Num'] > 0.0:
                 f_str = r['Fecha_DT'].strftime('%Y-%m-%d') if pd.notna(r['Fecha_DT']) else ''
                 key = (str(r['Deudor_SAP_OK']), f_str, str(r['Nombre_Deudor_OK']))
                 
@@ -230,7 +230,7 @@ def procesar_archivos(file_hist, file_anexo):
             mapa_anexo[key] = []
         mapa_anexo[key].append(r)
 
-    # 3. CAZAR OMITIDOS: Estaban en histórico pendientes pero NO están en el anexo de hoy
+    # 3. CAZAR OMITIDOS (Ej: la trampa de los 13 pesos)
     omitidos_list = []
     for key, lista_h in mapa_hist.items():
         cant_hist = len(lista_h)
@@ -345,7 +345,7 @@ def procesar_archivos(file_hist, file_anexo):
     tot_pendientes = pendientes['Saldo_Num'].sum() if not pendientes.empty else 0
     tot_omitidos = omitidos['Saldo_Num'].sum() if not omitidos.empty else 0
     
-    m_str = f"## 🥤 **AUDITORÍA DE FALTANTES**\n\n"
+    m_str = f"## 🥤 **AUDITORÍA DE FALTANTES - JAMUNDÍ**\n\n"
     m_str += f"- 🔴 **Nuevos Faltantes (Día Actual - {formatear_fecha_ui(fecha_dia_actual)}):** {len(nuevos)} registro(s) | **${int(tot_nuevos):,}**\n"
     m_str += f"- 🟢 **Faltantes Saldados / Pagados:** {len(saldados)} registro(s) | **${int(tot_saldados):,}**\n"
     m_str += f"- 🟣 **Pendientes Activos (Días Anteriores):** {len(pendientes)} registro(s) | **${int(tot_pendientes):,}**\n"
@@ -382,7 +382,7 @@ def procesar_archivos(file_hist, file_anexo):
 
 
 # --- INTERFAZ EN STREAMLIT ---
-st.markdown("# 🥤 **SISTEMA DE AUDITORÍA DE FALTANTES**")
+st.markdown("# 🥤 **POSTOBÓN JAMUNDÍ - SISTEMA DE AUDITORÍA DE FALTANTES**")
 
 col1, col2 = st.columns([1, 1])
 
@@ -399,7 +399,7 @@ if ejecutar:
     if file_anexo is None:
         st.warning("⚠️ Por favor sube el Anexo del día para realizar la auditoría.")
     else:
-        with st.spinner("Cazando trampas ocultas y 13 pesos..."):
+        with st.spinner("Procesando auditoría y cazando trampas..."):
             m_str, fig_pie, fig_bar, df_nuevos, df_saldados, df_pendientes, df_omitidos = procesar_archivos(file_hist, file_anexo)
             
         st.markdown("---")
