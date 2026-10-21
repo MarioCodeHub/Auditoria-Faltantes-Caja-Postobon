@@ -193,7 +193,7 @@ def cargar_anexo_excel(file_obj):
         return pd.DataFrame()
 
 
-# --- MOTOR DE AUDITORÍA JAMUNDÍ CON CAZA DE TRAMPAS ---
+# --- MOTOR DE AUDITORÍA JAMUNDÍ SEGURO ---
 def procesar_archivos(file_hist, file_anexo):
     if file_anexo is None:
         return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -207,35 +207,29 @@ def procesar_archivos(file_hist, file_anexo):
     fechas_validas = df_anexo['Fecha_DT'].dropna()
     fecha_dia_actual = fechas_validas.max() if not fechas_validas.empty else pd.Timestamp('2026-10-20')
 
-    # 1. CATALOGAR TODO EL HISTÓRICO PENDIENTE (Saldo > 0)
     mapa_hist = {}
     if not df_hist.empty:
         for idx, r in df_hist.iterrows():
             if r['Saldo_Num'] > 0.0:
                 f_str = r['Fecha_DT'].strftime('%Y-%m-%d') if pd.notna(r['Fecha_DT']) else ''
                 key = (str(r['Deudor_SAP_OK']), f_str, str(r['Nombre_Deudor_OK']))
-                
                 if key not in mapa_hist:
                     mapa_hist[key] = []
                 mapa_hist[key].append(r)
 
-    # 2. CATALOGAR LO QUE LLEGÓ EN EL ANEXO DE HOY
     mapa_anexo = {}
     for idx, r in df_anexo.iterrows():
         f_dt = r['Fecha_DT']
         f_str = f_dt.strftime('%Y-%m-%d') if pd.notna(f_dt) else ''
         key = (str(r['Deudor_SAP_OK']), f_str, str(r['Nombre_Deudor_OK']))
-        
         if key not in mapa_anexo:
             mapa_anexo[key] = []
         mapa_anexo[key].append(r)
 
-    # 3. CAZAR OMITIDOS (Ej: la trampa de los 13 pesos)
     omitidos_list = []
     for key, lista_h in mapa_hist.items():
         cant_hist = len(lista_h)
         cant_anexo = len(mapa_anexo.get(key, []))
-        
         if cant_hist > cant_anexo:
             for reg_h in lista_h[cant_anexo:]:
                 omitidos_list.append({
@@ -263,7 +257,6 @@ def procesar_archivos(file_hist, file_anexo):
 
     omitidos = pd.DataFrame(omitidos_list) if omitidos_list else pd.DataFrame(columns=df_anexo.columns)
 
-    # 4. PROCESAR SALDADOS Y ACTIVOS DEL ANEXO
     saldados_list = []
     activos_anexo = []
 
@@ -399,7 +392,7 @@ if ejecutar:
     if file_anexo is None:
         st.warning("⚠️ Por favor sube el Anexo del día para realizar la auditoría.")
     else:
-        with st.spinner("Procesando auditoría y cazando trampas..."):
+        with st.spinner("Procesando auditoría limpia y segura..."):
             m_str, fig_pie, fig_bar, df_nuevos, df_saldados, df_pendientes, df_omitidos = procesar_archivos(file_hist, file_anexo)
             
         st.markdown("---")
