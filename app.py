@@ -199,7 +199,7 @@ def cargar_anexo_excel(file_obj):
         return pd.DataFrame()
 
 
-# --- MOTOR DE AUDITORÍA CON DETECCIÓN PRECISA DE OMITIDOS ---
+# --- MOTOR DE AUDITORÍA REORGANIZADO Y RESTAURADO ---
 def procesar_archivos(file_hist, file_anexo):
     if file_anexo is None:
         return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -213,21 +213,18 @@ def procesar_archivos(file_hist, file_anexo):
     fechas_validas = df_anexo['Fecha_DT'].dropna()
     fecha_dia_actual = fechas_validas.max() if not fechas_validas.empty else pd.Timestamp('2026-10-20')
 
-    # 1. CATALOGAR REGISTROS DEL ANEXO DE HOY
-    # Creamos un conjunto de llaves presentes hoy en el anexo
+    # 1. CATALOGAR ANEXO DE HOY (Tanto activos como saldados para evitar falsas omisiones)
     llaves_anexo_hoy = set()
     for _, r in df_anexo.iterrows():
         f_dt = r['Fecha_DT']
         f_str = f_dt.strftime('%Y-%m-%d') if pd.notna(f_dt) else ''
-        sap_val = str(r['Deudor_SAP_OK'])
-        nom_val = str(r['Nombre_Deudor_OK'])
+        sap_v = str(r['Deudor_SAP_OK'])
+        nom_v = str(r['Nombre_Deudor_OK'])
         
-        # Llave principal
-        llaves_anexo_hoy.add((sap_val, f_str, nom_val))
-        # Llave secundaria por fecha para evitar problemas de nombres cambiados
+        llaves_anexo_hoy.add((sap_v, f_str, nom_v))
         llaves_anexo_hoy.add((f_str, round(r['Valor_Faltante_Num'], 2)))
 
-    # 2. CAZAR OMITIDOS DEL HISTÓRICO
+    # 2. DETECTAR OMITIDOS (Cotejar todo registro histórico con Saldo > 0 contra el anexo del día)
     omitidos_list = []
     mapa_hist_activos = {}
 
@@ -236,13 +233,13 @@ def procesar_archivos(file_hist, file_anexo):
             if r['Saldo_Num'] > 0.0:
                 f_dt = r['Fecha_DT']
                 f_str = f_dt.strftime('%Y-%m-%d') if pd.notna(f_dt) else ''
-                sap_val = str(r['Deudor_SAP_OK'])
-                nom_val = str(r['Nombre_Deudor_OK'])
+                sap_v = str(r['Deudor_SAP_OK'])
+                nom_v = str(r['Nombre_Deudor_OK'])
                 
-                key_1 = (sap_val, f_str, nom_val)
+                key_1 = (sap_v, f_str, nom_v)
                 key_2 = (f_str, round(r['Valor_Faltante_Num'], 2))
                 
-                # Si el registro no está en el anexo de hoy ni por llave principal ni por fecha/monto, fue OMITIDO
+                # Si la persona o el monto no vinieron reportados hoy en absoluto:
                 if key_1 not in llaves_anexo_hoy and key_2 not in llaves_anexo_hoy:
                     omitidos_list.append({
                         'Deudor_SAP_OK': r['Deudor_SAP_OK'],
@@ -259,7 +256,7 @@ def procesar_archivos(file_hist, file_anexo):
 
     omitidos = pd.DataFrame(omitidos_list) if omitidos_list else pd.DataFrame(columns=df_anexo.columns)
 
-    # 3. PROCESAR SALDADOS Y ACTIVOS DEL ANEXO
+    # 3. SEPARAR SALDADOS VS ACTIVOS DEL ANEXO
     saldados_list = []
     activos_anexo = []
 
@@ -278,6 +275,7 @@ def procesar_archivos(file_hist, file_anexo):
 
     saldados = pd.DataFrame(saldados_list) if saldados_list else pd.DataFrame()
 
+    # 4. CLASIFICAR NUEVOS (SÓLO DÍA ACTUAL) VS PENDIENTES ACTIVOS (ANTERIORES)
     nuevos_list = []
     pendientes_list = []
 
@@ -307,6 +305,7 @@ def procesar_archivos(file_hist, file_anexo):
             f_dt_norm = pd.to_datetime(f_dt.date())
             f_corte_norm = pd.to_datetime(fecha_dia_actual.date())
             
+            # Si la fecha es estrictamente menor a la fecha máxima del anexo, es pendiente previo
             if f_dt_norm < f_corte_norm:
                 pendientes_list.append(row_final)
             else:
