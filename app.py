@@ -79,8 +79,8 @@ def cargar_historico_csv(file_obj):
         if header_idx == -1: header_idx = 0
         data_rows = rows[header_idx + 1:]
         
-        if len(data_rows) > 800:
-            data_rows = data_rows[-800:]
+        if len(data_rows) > 1000:
+            data_rows = data_rows[-1000:]
         
         registros = []
         for r in data_rows:
@@ -193,7 +193,7 @@ def cargar_anexo_excel(file_obj):
         return pd.DataFrame()
 
 
-# --- MOTOR DE AUDITORÍA CON CONTROL DE OMITIDOS POR HUELLA ÚNICA ---
+# --- MOTOR DE AUDITORÍA BLINDADO CAZA-TRAMPAS ---
 def procesar_archivos(file_hist, file_anexo):
     if file_anexo is None:
         return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -207,41 +207,42 @@ def procesar_archivos(file_hist, file_anexo):
     fechas_validas = df_anexo['Fecha_DT'].dropna()
     fecha_dia_actual = fechas_validas.max() if not fechas_validas.empty else pd.Timestamp('2026-10-20')
 
-    # Crear huella única por cada registro pendiente en el histórico
+    # 1. CATALOGAR TODO EL HISTÓRICO PENDIENTE (Saldo > 0)
     mapa_hist = {}
-    contador_hist = {}
     if not df_hist.empty:
-        for _, r in df_hist.iterrows():
-            if r['Saldo_Num'] > 0.01:
+        for idx, r in df_hist.iterrows():
+            if r['Saldo_Num'] > 0.0:  # ¡Incluye hasta los de 13 pesos!
                 f_str = r['Fecha_DT'].strftime('%Y-%m-%d') if pd.notna(r['Fecha_DT']) else ''
-                # Huella que incluye SAP, Fecha, Nombre y el Saldo exacto para evitar colisiones
-                huella = (str(r['Deudor_SAP_OK']), f_str, str(r['Nombre_Deudor_OK']), round(r['Saldo_Num'], 2))
+                # Llave maestra única combinando SAP, Fecha exacta y Nombre limpio
+                key = (str(r['Deudor_SAP_OK']), f_str, str(r['Nombre_Deudor_OK']))
                 
-                # Manejar duplicados exactos contando ocurrencias
-                contador_hist[huella] = contador_hist.get(huella, 0) + 1
-                mapa_hist[(huella, contador_hist[huella])] = r
+                if key not in mapa_hist:
+                    mapa_hist[key] = []
+                mapa_hist[key].append(r)
 
-    # Crear huellas de lo que SÍ vino en el anexo de hoy
-    contador_anexo = {}
-    claves_anexo_hoy = set()
-    for _, r in df_anexo.iterrows():
+    # 2. CATALOGAR LO QUE LLEGÓ EN EL ANEXO DE HOY
+    mapa_anexo = {}
+    for idx, r in df_anexo.iterrows():
         f_dt = r['Fecha_DT']
         f_str = f_dt.strftime('%Y-%m-%d') if pd.notna(f_dt) else ''
-        saldo_aux = r['Saldo_Num']
+        key = (str(r['Deudor_SAP_OK']), f_str, str(r['Nombre_Deudor_OK']))
         
-        huella_a = (str(r['Deudor_SAP_OK']), f_str, str(r['Nombre_Deudor_OK']), round(saldo_aux, 2))
-        contador_anexo[huella_a] = contador_anexo.get(huella_a, 0) + 1
-        claves_anexo_hoy.add((huella_a, contador_anexo[huella_a]))
+        if key not in mapa_anexo:
+            mapa_anexo[key] = []
+        mapa_anexo[key].append(r)
 
-    # 1. DETECTAR OMITIDOS EN ANEXO CON CONTADOR PRECISO
+    # 3. CAZAR OMITIDOS: Estaban en histórico pendientes pero NO están en el anexo de hoy
     omitidos_list = []
-    for huella_h, freq in contador_hist.items():
-        for i in range(1, freq + 1):
-            if ((huella_h, i)) not in claves_anexo_hoy:
-                reg_h = mapa_hist[(huella_h, i)]
+    for key, lista_h in mapa_hist.items():
+        cant_hist = len(lista_h)
+        cant_anexo = len(mapa_anexo.get(key, []))
+        
+        # Si en el histórico hay más registros que en el anexo de hoy, los faltantes fueron omitidos
+        if cant_hist > cant_anexo:
+            for reg_h in lista_h[cant_anexo:]:
                 omitidos_list.append({
-                    'Deudor_SAP_OK': huella_h[0],
-                    'Nombre_Deudor_OK': huella_h[2],
+                    'Deudor_SAP_OK': key[0],
+                    'Nombre_Deudor_OK': key[2],
                     'Fecha_DT': reg_h['Fecha_DT'],
                     'Fecha_UI': reg_h['Fecha_UI'],
                     'Valor_Faltante_Num': reg_h['Valor_Faltante_Num'],
@@ -249,9 +250,22 @@ def procesar_archivos(file_hist, file_anexo):
                     'Saldo_Num': reg_h['Saldo_Num'],
                     'Motivo_OK': reg_h['Motivo_OK']
                 })
+        elif key not in mapa_anexo:
+            for reg_h in lista_h:
+                omitidos_list.append({
+                    'Deudor_SAP_OK': key[0],
+                    'Nombre_Deudor_OK': key[2],
+                    'Fecha_DT': reg_h['Fecha_DT'],
+                    'Fecha_UI': reg_h['Fecha_UI'],
+                    'Valor_Faltante_Num': reg_h['Valor_Faltante_Num'],
+                    'Abonos_Num': reg_h['Abonos_Num'],
+                    'Saldo_Num': reg_h['Saldo_Num'],
+                    'Motivo_OK': reg_h['Motivo_OK']
+                })
+
     omitidos = pd.DataFrame(omitidos_list) if omitidos_list else pd.DataFrame(columns=df_anexo.columns)
 
-    # 2. SEPARAR SALDADOS EN EL ANEXO
+    # 4. PROCESAR SALDADOS Y ACTIVOS DEL ANEXO
     saldados_list = []
     activos_anexo = []
 
@@ -270,7 +284,6 @@ def procesar_archivos(file_hist, file_anexo):
 
     saldados = pd.DataFrame(saldados_list) if saldados_list else pd.DataFrame()
 
-    # 3. SEPARAR NUEVOS (DÍA ACTUAL) VS PENDIENTES ACTIVOS (DÍAS ANTERIORES)
     nuevos_list = []
     pendientes_list = []
 
@@ -279,20 +292,17 @@ def procesar_archivos(file_hist, file_anexo):
         sap_r = str(row['Deudor_SAP_OK'])
         f_str_r = f_dt.strftime('%Y-%m-%d') if pd.notna(f_dt) else ''
         nombre_r = str(row['Nombre_Deudor_OK'])
+        key = (sap_r, f_str_r, nombre_r)
         
         v_inicial = row['Valor_Faltante_Num']
         abono_calc = row['Abonos_Num']
         saldo_actual = row['Saldo_Num']
         
-        # Buscar en mapa hist por coincidencia flexible
-        encontrado_hist = False
-        for (h_sap, h_fstr, h_nom, h_saldo), reg_h in mapa_hist.items():
-            if h_sap == sap_r and h_nom == nombre_r and h_fstr == f_str_r:
-                if reg_h['Valor_Faltante_Num'] > saldo_actual:
-                    v_inicial = reg_h['Valor_Faltante_Num']
-                    abono_calc = v_inicial - saldo_actual
-                encontrado_hist = True
-                break
+        if key in mapa_hist and len(mapa_hist[key]) > 0:
+            reg_h = mapa_hist[key][0]
+            if reg_h['Valor_Faltante_Num'] > saldo_actual:
+                v_inicial = reg_h['Valor_Faltante_Num']
+                abono_calc = v_inicial - saldo_actual
 
         row_final = row.copy()
         row_final['Valor_Faltante_Num'] = v_inicial
@@ -391,7 +401,7 @@ if ejecutar:
     if file_anexo is None:
         st.warning("⚠️ Por favor sube el Anexo del día para realizar la auditoría.")
     else:
-        with st.spinner("Procesando auditoría y cazando trampas..."):
+        with st.spinner("Cazando trampas ocultas y 13 pesos..."):
             m_str, fig_pie, fig_bar, df_nuevos, df_saldados, df_pendientes, df_omitidos = procesar_archivos(file_hist, file_anexo)
             
         st.markdown("---")
