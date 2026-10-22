@@ -16,7 +16,7 @@ st.set_page_config(
 
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
-# --- FUNCIONES DE LIMPIEZA Y FORMATO (ORIGINALES) ---
+# --- FUNCIONES DE LIMPIEZA Y FORMATO ---
 def remover_tildes_y_raros(texto):
     if pd.isna(texto): return ""
     txt = str(texto).upper().strip()
@@ -193,7 +193,7 @@ def cargar_anexo_excel(file_obj):
         return pd.DataFrame()
 
 
-# --- MOTOR DE AUDITORÍA (ORIGINAL CON CAZA DE OMITIDOS AJUSTADA) ---
+# --- MOTOR DE AUDITORÍA (CORRECCIÓN DEFINITIVA DE OMITIDOS) ---
 def procesar_archivos(file_hist, file_anexo):
     if file_anexo is None:
         return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -207,27 +207,36 @@ def procesar_archivos(file_hist, file_anexo):
     fechas_validas = df_anexo['Fecha_DT'].dropna()
     fecha_dia_actual = fechas_validas.max() if not fechas_validas.empty else pd.Timestamp('2026-10-20')
 
-    # Identificadores que llegaron hoy en el anexo
-    anexo_saps = set(df_anexo['Deudor_SAP_OK'].astype(str))
-    anexo_nombres = set(df_anexo['Nombre_Deudor_OK'].astype(str))
+    # 1. CATALOGAR LO QUE LLEGÓ HOY EN EL ANEXO CON LLAVE TRIPLE (SAP, FECHA, VALOR INICIAL)
+    conteo_anexo = {}
+    for _, r in df_anexo.iterrows():
+        sap = str(r['Deudor_SAP_OK']).strip()
+        f_str = r['Fecha_DT'].strftime('%Y-%m-%d') if pd.notna(r['Fecha_DT']) else ''
+        valor = round(float(r['Valor_Faltante_Num']), 2)
+        
+        key = (sap, f_str, valor)
+        conteo_anexo[key] = conteo_anexo.get(key, 0) + 1
 
-    # 1. DETECTAR OMITIDOS
-    # Un registro del histórico pendiente (Saldo > 0) es OMITIDO si su SAP no es "1" y no está en los SAPs de hoy,
-    # O si no tiene SAP ("1") pero su nombre tampoco está en los nombres de hoy.
+    # 2. CAZAR OMITIDOS
     omitidos_list = []
+    conteo_hist_usado = {}
+    
     if not df_hist.empty:
         for idx, r in df_hist.iterrows():
-            if r['Saldo_Num'] > 0.0:
-                sap_h = str(r['Deudor_SAP_OK'])
-                nom_h = str(r['Nombre_Deudor_OK'])
+            if r['Saldo_Num'] > 0.001:  # Tiene saldo pendiente en histórico
+                sap = str(r['Deudor_SAP_OK']).strip()
+                f_str = r['Fecha_DT'].strftime('%Y-%m-%d') if pd.notna(r['Fecha_DT']) else ''
+                valor = round(float(r['Valor_Faltante_Num']), 2)
                 
-                esta_en_anexo = False
-                if sap_h != "1" and sap_h in anexo_saps:
-                    esta_en_anexo = True
-                elif sap_h == "1" and nom_h in anexo_nombres:
-                    esta_en_anexo = True
+                key = (sap, f_str, valor)
                 
-                if not esta_en_anexo:
+                usados = conteo_hist_usado.get(key, 0)
+                disponibles_en_anexo = conteo_anexo.get(key, 0)
+                
+                if usados < disponibles_en_anexo:
+                    conteo_hist_usado[key] = usados + 1
+                else:
+                    # Si no vino en el anexo de hoy, se notifica como omitido
                     omitidos_list.append({
                         'Deudor_SAP_OK': r['Deudor_SAP_OK'],
                         'Nombre_Deudor_OK': r['Nombre_Deudor_OK'],
@@ -241,7 +250,7 @@ def procesar_archivos(file_hist, file_anexo):
 
     omitidos = pd.DataFrame(omitidos_list) if omitidos_list else pd.DataFrame(columns=df_anexo.columns)
 
-    # 2. PROCESAR SALDADOS Y ACTIVOS DEL ANEXO
+    # 3. PROCESAR SALDADOS Y ACTIVOS DEL ANEXO DIARIO
     saldados_list = []
     activos_anexo = []
 
