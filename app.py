@@ -102,7 +102,11 @@ def cargar_historico_csv(file_obj):
             
             val_monto = limpiar_monto(valor_raw)
             val_abono = limpiar_monto(abono_raw)
-            val_saldo = limpiar_monto(saldo_raw) if str(saldo_raw).strip() not in ['-', ''] else (val_monto - val_abono)
+            
+            # Cálculo matemático seguro del saldo para evitar celdas no calculadas o nulas
+            val_saldo_calc = max(0.0, val_monto - val_abono)
+            val_saldo_excel = limpiar_monto(saldo_raw) if str(saldo_raw).strip() not in ['-', ''] else 0.0
+            val_saldo = val_saldo_excel if val_saldo_excel > 0 else val_saldo_calc
             
             if val_monto <= 0: continue
             f_dt = convertir_a_fecha(fecha_raw)
@@ -113,7 +117,7 @@ def cargar_historico_csv(file_obj):
                 'Nombre_Deudor_OK': nombre_limpio,
                 'Valor_Faltante_Num': val_monto,
                 'Abonos_Num': val_abono,
-                'Saldo_Num': max(0.0, val_saldo),
+                'Saldo_Num': val_saldo,
                 'Fecha_DT': f_dt,
                 'Fecha_UI': formatear_fecha_ui(f_dt),
                 'Motivo_OK': str(motivo_raw).strip()
@@ -158,7 +162,14 @@ def cargar_anexo_excel(file_obj):
         
         df['Valor_Faltante_Num'] = df[col_valor].apply(limpiar_monto) if col_valor else 0.0
         df['Abonos_Num'] = df[col_abono].apply(limpiar_monto) if col_abono else 0.0
-        df['Saldo_Num'] = df[col_saldo].apply(limpiar_monto) if col_saldo else (df['Valor_Faltante_Num'] - df['Abonos_Num'])
+        
+        # Garantizamos la captura del saldo real recomputando la fórmula de Excel si falló openpyxl
+        saldo_calculado = df['Valor_Faltante_Num'] - df['Abonos_Num']
+        if col_saldo:
+            saldo_excel = df[col_saldo].apply(limpiar_monto)
+            df['Saldo_Num'] = saldo_excel.where(saldo_excel > 0, saldo_calculado)
+        else:
+            df['Saldo_Num'] = saldo_calculado
         
         nombres_finales, saps_finales, fechas_dt, motivos_finales = [], [], [], []
         
@@ -199,7 +210,7 @@ def cargar_anexo_excel(file_obj):
         return pd.DataFrame()
 
 
-# --- MOTOR DE AUDITORÍA (ARQUITECTURA ORIGINAL RESTAURADA Y CAZA-TRAMPAS) ---
+# --- MOTOR DE AUDITORÍA ---
 def procesar_archivos(file_hist, file_anexo):
     if file_anexo is None:
         return "⚠️ Por favor sube el Anexo del día para realizar la auditoría.", None, None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -213,30 +224,32 @@ def procesar_archivos(file_hist, file_anexo):
     fechas_validas = df_anexo['Fecha_DT'].dropna()
     fecha_dia_actual = fechas_validas.max() if not fechas_validas.empty else pd.Timestamp('2026-10-20')
 
-    # 1. CATALOGAR TODO EL HISTÓRICO PENDIENTE (Saldo > 0) CON LLAVE CLÁSICA SAP + FECHA + NOMBRE
+    # 1. CATALOGAR HISTÓRICO PENDIENTE (Saldo > 0)
+    # Llave flexible (SAP + Fecha + Monto inicial) para que cualquier divergencia en el anexo active la alerta de Omitido
     mapa_hist = {}
     if not df_hist.empty:
         for idx, r in df_hist.iterrows():
-            if r['Saldo_Num'] > 0.0:  # ¡Incluye los 13 pesos!
+            if r['Saldo_Num'] > 0.0:
                 f_str = r['Fecha_DT'].strftime('%Y-%m-%d') if pd.notna(r['Fecha_DT']) else ''
-                key = (str(r['Deudor_SAP_OK']), f_str, str(r['Nombre_Deudor_OK']))
+                # Clave robusta por código SAP y Fecha
+                key = (str(r['Deudor_SAP_OK']), f_str)
                 
                 if key not in mapa_hist:
                     mapa_hist[key] = []
                 mapa_hist[key].append(r)
 
-    # 2. CATALOGAR LO QUE LLEGÓ EN EL ANEXO DE HOY
+    # 2. CATALOGAR REGISTROS DEL ANEXO DE HOY
     mapa_anexo = {}
     for idx, r in df_anexo.iterrows():
         f_dt = r['Fecha_DT']
         f_str = f_dt.strftime('%Y-%m-%d') if pd.notna(f_dt) else ''
-        key = (str(r['Deudor_SAP_OK']), f_str, str(r['Nombre_Deudor_OK']))
+        key = (str(r['Deudor_SAP_OK']), f_str)
         
         if key not in mapa_anexo:
             mapa_anexo[key] = []
         mapa_anexo[key].append(r)
 
-    # 3. CAZAR OMITIDOS: Estaban en histórico pendientes pero NO están en el anexo de hoy
+    # 3. DETECTAR REGISTROS OMITIDOS
     omitidos_list = []
     for key, lista_h in mapa_hist.items():
         cant_hist = len(lista_h)
@@ -245,8 +258,8 @@ def procesar_archivos(file_hist, file_anexo):
         if cant_hist > cant_anexo:
             for reg_h in lista_h[cant_anexo:]:
                 omitidos_list.append({
-                    'Deudor_SAP_OK': key[0],
-                    'Nombre_Deudor_OK': key[2],
+                    'Deudor_SAP_OK': reg_h['Deudor_SAP_OK'],
+                    'Nombre_Deudor_OK': reg_h['Nombre_Deudor_OK'],
                     'Fecha_DT': reg_h['Fecha_DT'],
                     'Fecha_UI': reg_h['Fecha_UI'],
                     'Valor_Faltante_Num': reg_h['Valor_Faltante_Num'],
@@ -257,8 +270,8 @@ def procesar_archivos(file_hist, file_anexo):
         elif key not in mapa_anexo:
             for reg_h in lista_h:
                 omitidos_list.append({
-                    'Deudor_SAP_OK': key[0],
-                    'Nombre_Deudor_OK': key[2],
+                    'Deudor_SAP_OK': reg_h['Deudor_SAP_OK'],
+                    'Nombre_Deudor_OK': reg_h['Nombre_Deudor_OK'],
                     'Fecha_DT': reg_h['Fecha_DT'],
                     'Fecha_UI': reg_h['Fecha_UI'],
                     'Valor_Faltante_Num': reg_h['Valor_Faltante_Num'],
@@ -269,7 +282,7 @@ def procesar_archivos(file_hist, file_anexo):
 
     omitidos = pd.DataFrame(omitidos_list) if omitidos_list else pd.DataFrame(columns=df_anexo.columns)
 
-    # 4. PROCESAR SALDADOS Y ACTIVOS DEL ANEXO
+    # 4. CLASIFICAR SALDADOS Y ACTIVOS DEL ANEXO
     saldados_list = []
     activos_anexo = []
 
@@ -295,8 +308,7 @@ def procesar_archivos(file_hist, file_anexo):
         f_dt = row['Fecha_DT']
         sap_r = str(row['Deudor_SAP_OK'])
         f_str_r = f_dt.strftime('%Y-%m-%d') if pd.notna(f_dt) else ''
-        nombre_r = str(row['Nombre_Deudor_OK'])
-        key = (sap_r, f_str_r, nombre_r)
+        key = (sap_r, f_str_r)
         
         v_inicial = row['Valor_Faltante_Num']
         abono_calc = row['Abonos_Num']
